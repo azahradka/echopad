@@ -1,5 +1,5 @@
 @import "tailwindcss";
-@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/ocean.css";
 @import "fumadocs-ui/css/preset.css";
 
 /* EchoPad blue, matched to the icon's wave (#1F5FD1). */
@@ -27,18 +27,9 @@ html > body[data-scroll-locked] {
   --removed-body-scroll-bar-size: 0px !important;
 }
 
-.echo-glow {
-  background:
-    radial-gradient(
-      60% 50% at 50% 0%,
-      hsla(218, 80%, 55%, 0.26),
-      transparent 70%
-    ),
-    radial-gradient(
-      40% 40% at 85% 20%,
-      hsla(265, 70%, 60%, 0.14),
-      transparent 70%
-    );
+/* The notebook sidebar hides its footer row on desktop; keep the credit visible. */
+div:has(> .echo-credit) {
+  display: flex;
 }
 
 /* One-line steps are shorter than their 2rem number badge, so the badges

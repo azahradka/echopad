@@ -1,4 +1,5 @@
 import {
+  ArrowUpRight,
   AudioLines,
   Bell,
   Cpu,
@@ -98,40 +99,47 @@ export default function HomePage() {
   return (
     <main className="flex flex-col">
       <Hero />
+      <div className="mx-auto w-full max-w-6xl px-6 pt-12 pb-4">
+        <Screenshot
+          name="conversations"
+          alt="EchoPad main window with a transcript split by speaker"
+          className="my-0"
+        />
+      </div>
+
       <Section eyebrow="How it works" title="From call to notes without typing">
-        <div className="grid gap-4 md:grid-cols-3">
+        <ol className="divide-y border-y">
           {steps.map((step, index) => (
-            <div key={step.title} className="rounded-2xl border bg-fd-card p-6">
-              <div className="mb-4 flex items-center gap-3">
-                <span className="flex size-10 items-center justify-center rounded-xl bg-fd-primary/15 text-fd-primary">
-                  <step.icon className="size-5" />
-                </span>
-                <span className="text-sm font-medium text-fd-muted-foreground">
-                  Step {index + 1}
-                </span>
+            <li key={step.title} className="flex gap-5 py-5">
+              <span className="w-8 shrink-0 pt-0.5 font-mono text-sm text-fd-primary">
+                {String(index + 1).padStart(2, "0")}
+              </span>
+              <div>
+                <h3 className="flex items-center gap-2 font-semibold">
+                  <step.icon className="size-4 text-fd-muted-foreground" />
+                  {step.title}
+                </h3>
+                <p className="mt-1 text-fd-muted-foreground">{step.text}</p>
               </div>
-              <h3 className="text-lg font-semibold">{step.title}</h3>
-              <p className="mt-1 text-fd-muted-foreground">{step.text}</p>
-            </div>
+            </li>
           ))}
-        </div>
+        </ol>
       </Section>
 
       <Section
         eyebrow="Features"
         title="A meeting recorder that stays out of the way"
       >
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-x-10 border-b sm:grid-cols-2">
           {features.map((feature) => (
-            <div
-              key={feature.title}
-              className="rounded-2xl border bg-fd-card p-6"
-            >
-              <feature.icon className="mb-4 size-6 text-fd-primary" />
-              <h3 className="font-semibold">{feature.title}</h3>
-              <p className="mt-1 text-sm text-fd-muted-foreground">
-                {feature.text}
-              </p>
+            <div key={feature.title} className="flex gap-4 border-t py-5">
+              <feature.icon className="mt-0.5 size-5 shrink-0 text-fd-primary" />
+              <div>
+                <h3 className="font-semibold">{feature.title}</h3>
+                <p className="mt-1 text-sm text-fd-muted-foreground">
+                  {feature.text}
+                </p>
+              </div>
             </div>
           ))}
         </div>
@@ -141,119 +149,120 @@ export default function HomePage() {
         eyebrow="A look inside"
         title="Conversations, save locations and settings in one window"
       >
-        <div className="grid gap-6 lg:grid-cols-2">
+        <div className="grid gap-6 md:grid-cols-2">
           <Screenshot
             name="destinations"
             alt="Save location editor with folder, file name, formats and audio options"
             caption="Save locations with a live preview of the path"
+            className="my-0"
           />
           <Screenshot
             name="settings-recording"
             alt="Recording settings: microphone, system audio, meeting detection"
             caption="What to record, and when to ask"
+            className="my-0"
           />
         </div>
       </Section>
 
       <Section eyebrow="Privacy" title="What leaves your Mac? Nothing.">
-        <div className="grid gap-6 lg:grid-cols-2">
-          <ul className="flex flex-col justify-between gap-5 rounded-2xl border bg-fd-card p-6">
-            {privacyFacts.map((line) => (
-              <li key={line} className="flex gap-3">
-                <Lock className="mt-0.5 size-5 shrink-0 text-fd-primary" />
-                <span>{line}</span>
-              </li>
+        <ul className="divide-y border-y">
+          {privacyFacts.map((line) => (
+            <li key={line} className="flex gap-3 py-3.5">
+              <Lock className="mt-0.5 size-4 shrink-0 text-fd-primary" />
+              <span>{line}</span>
+            </li>
+          ))}
+        </ul>
+        <table className="mt-10 w-full table-fixed border-y text-sm">
+          <thead>
+            <tr>
+              <th className="w-[38%] py-3 pr-4 text-left font-medium" />
+              <th className="py-3 pr-4 text-left font-semibold text-fd-primary">
+                EchoPad
+              </th>
+              <th className="py-3 text-left font-medium text-fd-muted-foreground">
+                Typical meeting note-taker
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {comparison.map(([label, ours, cloud]) => (
+              <tr key={label} className="border-t">
+                <td className="py-3 pr-4 text-fd-muted-foreground">{label}</td>
+                <td className="py-3 pr-4 font-medium">{ours}</td>
+                <td className="py-3 text-fd-muted-foreground">{cloud}</td>
+              </tr>
             ))}
-          </ul>
-          <div className="overflow-hidden rounded-2xl border bg-fd-card">
-            <table className="h-full w-full table-fixed text-sm">
-              <thead className="bg-fd-muted">
-                <tr>
-                  <th className="w-[38%] px-5 py-3.5 text-left font-medium" />
-                  <th className="px-5 py-3.5 text-left font-semibold text-fd-primary">
-                    EchoPad
-                  </th>
-                  <th className="px-5 py-3.5 text-left font-medium text-fd-muted-foreground">
-                    Typical meeting note-taker
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {comparison.map(([label, ours, cloud]) => (
-                  <tr key={label} className="border-t">
-                    <td className="px-5 py-3.5 text-fd-muted-foreground">
-                      {label}
-                    </td>
-                    <td className="px-5 py-3.5 font-medium">{ours}</td>
-                    <td className="px-5 py-3.5 text-fd-muted-foreground">
-                      {cloud}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+          </tbody>
+        </table>
       </Section>
 
       <Section eyebrow="Open source" title="Two Swift packages you can use too">
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="divide-y border-y">
           {packages.map((item) => (
             <a
               key={item.name}
               href={item.url}
-              className="group rounded-2xl border bg-fd-card p-6 transition hover:border-fd-primary/50"
+              className="group flex gap-4 py-5"
             >
-              <Package className="mb-4 size-6 text-fd-primary" />
-              <h3 className="font-semibold group-hover:text-fd-primary">
-                {item.name}
-              </h3>
-              <p className="mt-1 text-sm text-fd-muted-foreground">
-                {item.text}
-              </p>
+              <Package className="mt-0.5 size-5 shrink-0 text-fd-primary" />
+              <div className="min-w-0 flex-1">
+                <h3 className="font-semibold group-hover:text-fd-primary">
+                  {item.name}
+                </h3>
+                <p className="mt-1 text-sm text-fd-muted-foreground">
+                  {item.text}
+                </p>
+              </div>
+              <ArrowUpRight className="mt-0.5 size-4 shrink-0 text-fd-muted-foreground group-hover:text-fd-primary" />
             </a>
           ))}
         </div>
       </Section>
 
-      <section className="mx-auto w-full max-w-5xl px-6 pb-24">
-        <div className="echo-glow rounded-3xl border bg-fd-card px-8 py-14 text-center">
-          <h2 className="text-3xl font-bold tracking-tight">
-            Keep every conversation
-          </h2>
-          <p className="mx-auto mt-3 max-w-xl text-fd-muted-foreground">
-            Build it from source in one command. Setup walks you through
-            permissions, the model download and where to save.
-          </p>
-          <CallToAction className="mt-8 justify-center" />
+      <section className="mt-8 border-y bg-fd-muted">
+        <div className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-12 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-2xl font-semibold tracking-tight">
+              Keep every conversation
+            </h2>
+            <p className="mt-2 max-w-xl text-fd-muted-foreground">
+              Build it from source in one command. Setup walks you through
+              permissions, the model download and where to save.
+            </p>
+          </div>
+          <CallToAction className="shrink-0" />
         </div>
       </section>
 
-      <footer className="border-t py-10 text-center text-sm text-fd-muted-foreground">
-        <p>
-          Made by{" "}
-          <a
-            className="font-medium text-fd-foreground underline underline-offset-4"
-            href={authorUrl}
-          >
-            Lucas Piera
-          </a>
-          .
-        </p>
-        <p className="mt-2">
-          MIT licensed. Built on{" "}
-          <a
-            className="underline"
-            href="https://github.com/FluidInference/FluidAudio"
-          >
-            FluidAudio
-          </a>{" "}
-          and NVIDIA Parakeet, through{" "}
-          <Link className="underline" href="/docs/packages">
-            ScribeKit and SystemAudioKit
-          </Link>
-          .
-        </p>
+      <footer className="py-10 text-sm text-fd-muted-foreground">
+        <div className="mx-auto max-w-6xl px-6">
+          <p>
+            Made by{" "}
+            <a
+              className="font-medium text-fd-foreground underline underline-offset-4"
+              href={authorUrl}
+            >
+              Lucas Piera
+            </a>
+            .
+          </p>
+          <p className="mt-2">
+            MIT licensed. Built on{" "}
+            <a
+              className="underline"
+              href="https://github.com/FluidInference/FluidAudio"
+            >
+              FluidAudio
+            </a>{" "}
+            and NVIDIA Parakeet, through{" "}
+            <Link className="underline" href="/docs/packages">
+              ScribeKit and SystemAudioKit
+            </Link>
+            .
+          </p>
+        </div>
       </footer>
     </main>
   );
@@ -261,37 +270,41 @@ export default function HomePage() {
 
 function Hero() {
   return (
-    <section className="echo-glow relative overflow-hidden">
-      <div className="mx-auto flex max-w-5xl flex-col items-center px-6 pt-20 pb-12 text-center">
-        {/* biome-ignore lint/performance/noImgElement: static export serves plain files */}
-        <img
-          src={asset("/icon-256.png")}
-          alt="EchoPad icon"
-          width={96}
-          height={96}
-          className="mb-6 drop-shadow-xl"
-        />
-        <span className="mb-5 rounded-full border bg-fd-card px-3 py-1 text-xs font-medium text-fd-muted-foreground">
-          Free · Open source · Runs on your Mac
-        </span>
-        <h1 className="text-5xl font-bold tracking-tight sm:text-6xl">
-          Every call, <span className="text-fd-primary">on paper.</span>
-        </h1>
-        <p className="mt-5 max-w-2xl text-lg text-fd-muted-foreground">
-          EchoPad records your calls and meetings, tells the speakers apart and
-          saves the transcript where you keep your notes. No bot in the call, no
-          cloud, no subscription.
-        </p>
-        <CallToAction className="mt-8 justify-center" />
-      </div>
-      <div className="relative mx-auto max-w-5xl px-6 pb-20">
-        <Screenshot
-          name="conversations"
-          alt="EchoPad main window with a transcript split by speaker"
-          className="my-0"
-        />
-        <div className="absolute inset-x-0 bottom-8 flex justify-center">
-          <LivePill />
+    <section className="border-b">
+      <div className="mx-auto grid max-w-6xl items-center gap-12 px-6 pt-16 pb-14 lg:grid-cols-[1.1fr_1fr] lg:pt-24 lg:pb-20">
+        <div>
+          <div className="mb-6 flex items-center gap-3">
+            {/* biome-ignore lint/performance/noImgElement: static export serves plain files */}
+            <img
+              src={asset("/icon-256.png")}
+              alt="EchoPad icon"
+              width={48}
+              height={48}
+              className="drop-shadow-md"
+            />
+            <span className="text-sm font-medium text-fd-muted-foreground">
+              Free · Open source · Runs on your Mac
+            </span>
+          </div>
+          <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
+            Every call, <span className="text-fd-primary">on paper.</span>
+          </h1>
+          <p className="mt-5 max-w-xl text-lg text-fd-muted-foreground">
+            EchoPad records your calls and meetings, tells the speakers apart
+            and saves the transcript where you keep your notes. No bot in the
+            call, no cloud, no subscription.
+          </p>
+          <CallToAction className="mt-8" />
+        </div>
+        <div className="overflow-hidden rounded-lg border bg-fd-muted">
+          <div className="flex h-8 items-center gap-1.5 border-b bg-fd-background px-3">
+            <span className="size-2.5 rounded-full bg-fd-border" />
+            <span className="size-2.5 rounded-full bg-fd-border" />
+            <span className="size-2.5 rounded-full bg-fd-border" />
+          </div>
+          <div className="flex h-64 items-end justify-center px-4 pb-8 sm:h-72">
+            <LivePill bars={20} />
+          </div>
         </div>
       </div>
     </section>
@@ -303,13 +316,13 @@ function CallToAction({ className }: { className?: string }) {
     <div className={`flex flex-wrap gap-3 ${className ?? ""}`}>
       <Link
         href="/docs/installation"
-        className="rounded-full bg-fd-primary px-6 py-3 font-medium text-fd-primary-foreground transition hover:opacity-90"
+        className="rounded-md bg-fd-primary px-5 py-2.5 font-medium text-fd-primary-foreground transition hover:opacity-90"
       >
         Install EchoPad
       </Link>
       <a
         href={repoUrl}
-        className="inline-flex items-center gap-2 rounded-full border bg-fd-card px-6 py-3 font-medium transition hover:bg-fd-accent"
+        className="inline-flex items-center gap-2 rounded-md border bg-fd-background px-5 py-2.5 font-medium transition hover:bg-fd-accent"
       >
         <GitHubMark /> View on GitHub
       </a>
@@ -327,12 +340,14 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <section className="mx-auto w-full max-w-5xl px-6 py-16">
-      <p className="text-sm font-semibold uppercase tracking-wider text-fd-primary">
-        {eyebrow}
-      </p>
-      <h2 className="mt-2 mb-8 text-3xl font-bold tracking-tight">{title}</h2>
-      {children}
+    <section className="mx-auto grid w-full max-w-6xl gap-6 px-6 py-14 lg:grid-cols-[16rem_1fr] lg:gap-12">
+      <div>
+        <p className="font-mono text-xs uppercase tracking-wider text-fd-primary">
+          {eyebrow}
+        </p>
+        <h2 className="mt-2 text-2xl font-semibold tracking-tight">{title}</h2>
+      </div>
+      <div className="min-w-0">{children}</div>
     </section>
   );
 }
