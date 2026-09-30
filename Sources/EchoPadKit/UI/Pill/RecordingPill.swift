@@ -8,6 +8,8 @@ struct RecordingPillView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.appActions) private var actions
     @Namespace private var namespace
+    /// Drag and close support; `nil` keeps the pill still.
+    var mover: MovablePill?
 
     static let HEIGHT: CGFloat = 44
     static let MORPH = Animation.spring(response: 0.42, dampingFraction: 0.72)
@@ -18,6 +20,7 @@ struct RecordingPillView: View {
                 shape(for: content)
                     .glassEffect(content.glass, in: .capsule)
                     .glassEffectID("pill", in: namespace)
+                    .movablePill(mover, closeLabel: "Hide for This Recording")
                     .transition(.scale(scale: 0.5, anchor: .bottom).combined(with: .opacity))
             }
         }
@@ -105,7 +108,8 @@ enum PillContent: Equatable {
 }
 
 /// Hosts the pill in a floating panel above every app, on every Space. Only the
-/// pill itself takes clicks (for the stop button); the rest is click-through.
+/// pill itself takes clicks: the stop button, dragging it anywhere and closing
+/// it. The rest of the panel is click-through.
 @MainActor
 final class RecordingPillController {
     static let PANEL_SIZE = NSSize(width: 480, height: 80)
@@ -114,45 +118,47 @@ final class RecordingPillController {
 
     private let appState: AppState
     let panel: NSPanel
+    private let mover: MovablePill
     private var hideTask: Task<Void, Never>?
 
     var isEnabled = true {
         didSet { update() }
     }
 
-    init(appState: AppState, content: some View) {
+    init(appState: AppState, content: (MovablePill) -> some View) {
         self.appState = appState
         panel = Self.makePanel()
-        let host = NSHostingView(rootView: content)
+        mover = MovablePill(panel: panel, defaultBottom: Self.BOTTOM_MARGIN)
+        let host = PillHostingView(rootView: content(mover))
         host.frame = NSRect(origin: .zero, size: Self.PANEL_SIZE)
         panel.contentView = host
+        mover.onDismiss = { [weak self] in self?.update() }
         observeContinuously({ [weak self] in _ = self?.appState.phase }, onChange: { [weak self] in self?.update() })
     }
 
     private func update() {
         hideTask?.cancel()
-        guard isEnabled, PillContent(phase: appState.phase) != nil else {
-            hideTask = Task { [panel] in
+        // A closed pill comes back with the next recording, or to show a problem.
+        let content = PillContent(phase: appState.phase)
+        switch content {
+        case nil, .failed: mover.clearDismissal()
+        default: break
+        }
+        guard isEnabled, !mover.isDismissed, content != nil else {
+            hideTask = Task { [panel, mover] in
                 try? await Task.sleep(for: Self.HIDE_DELAY)
                 guard !Task.isCancelled else { return }
                 panel.orderOut(nil)
+                mover.didHide()
             }
             return
         }
-        // Clicks only matter while there is a stop button.
-        panel.ignoresMouseEvents = !appState.phase.isRecording
         if !panel.isVisible {
-            position()
+            // Follows the pointer to the screen the user is working on.
+            mover.place()
             panel.orderFrontRegardless()
         }
-    }
-
-    private func position() {
-        let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
-        guard let visible = screen?.visibleFrame else { return }
-        let origin = NSPoint(x: visible.midX - Self.PANEL_SIZE.width / 2, y: visible.minY + Self.BOTTOM_MARGIN)
-        panel.setFrame(NSRect(origin: origin, size: Self.PANEL_SIZE), display: false)
+        mover.didShow()
     }
 
     private static func makePanel() -> NSPanel {

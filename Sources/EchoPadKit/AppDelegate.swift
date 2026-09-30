@@ -33,7 +33,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         windows = WindowCoordinator(environment: { [unowned self] view in self.inject(view) })
         statusBar = StatusBarController(appState: appState, content: inject(AnyView(MenuBarPanel())))
         statusBar.onRightClick = { [weak self] in self?.recorder.toggle() }
-        pill = RecordingPillController(appState: appState, content: inject(AnyView(RecordingPillView())))
+        pill = RecordingPillController(appState: appState) { [unowned self] mover in inject(AnyView(RecordingPillView(mover: mover))) }
 
         meetings.isSuppressed = { [weak self] in self?.appState.phase.isBusy ?? false }
         meetings.onRecord = { [weak self] meeting in
