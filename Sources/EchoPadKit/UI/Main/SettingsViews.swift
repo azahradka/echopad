@@ -174,6 +174,7 @@ struct TranscriptionSettingsView: View {
     @Environment(SettingsModel.self) private var settings
     @Environment(AppState.self) private var appState
     @Environment(ExternalTranscriber.self) private var external
+    @Environment(SpeakerFinder.self) private var speakers
     @Environment(\.appActions) private var actions
 
     var body: some View {
@@ -194,11 +195,11 @@ struct TranscriptionSettingsView: View {
                 }
             } footer: {
                 if settings.value.transcriber == .external {
-                    Text("When a recording stops, EchoPad runs this command with the conversation's folder. It writes transcript.json there, which is then saved like any other transcript.")
+                    Text("When a recording stops, EchoPad finds the speakers, writes turns.json to the conversation's folder and runs this command with that folder. The command writes transcript.json there, which is then saved like any other transcript.")
                 }
             }
             if settings.value.transcriber == .external {
-                externalModels
+                externalPipeline
             } else {
                 builtInSections
             }
@@ -232,38 +233,36 @@ struct TranscriptionSettingsView: View {
         }
     }
 
-    private var externalModels: some View {
+    private var externalPipeline: some View {
         Section {
-            LabeledContent("Models") { externalModelStatus }
-            HStack {
-                Button("Download Models") {
-                    Task { try? await external.setUpModels(command: settings.value.externalCommand) }
-                }
-                .disabled(external.models == .ready || external.models == .checking || isDownloading)
-                Button("Forget Token") { external.forgetToken() }
-                    .disabled(!external.hasToken)
+            LabeledContent("Pipeline") { pipelineStatus }
+            LabeledContent("Speaker model") { speakerModelStatus }
+            Button("Set Up Pipeline") {
+                Task { try? await external.setUp(command: settings.value.externalCommand) }
             }
+            .disabled(external.pipeline == .ready || external.pipeline == .checking || isSettingUp)
         } header: {
-            Text("Models")
+            Text("Pipeline")
         } footer: {
-            Text("The command downloads its speech and speaker models once. The Hugging Face token for the speaker model is kept in your login Keychain.")
+            Text("Setting up creates the pipeline's Python environment and downloads Qwen3-ASR once. EchoPad finds speakers itself with a 30 MB model, downloaded the first time a recording is transcribed.")
         }
         .task(id: settings.value.externalCommand) {
+            speakers.refresh()
             // Waits for typing to pause before running the command.
             try? await Task.sleep(for: .milliseconds(500))
-            guard !Task.isCancelled, !isDownloading else { return }
+            guard !Task.isCancelled, !isSettingUp else { return }
             await external.check(command: settings.value.externalCommand)
         }
     }
 
-    private var isDownloading: Bool {
-        if case .downloading = external.models { return true }
+    private var isSettingUp: Bool {
+        if case .settingUp = external.pipeline { return true }
         return false
     }
 
     @ViewBuilder
-    private var externalModelStatus: some View {
-        switch external.models {
+    private var pipelineStatus: some View {
+        switch external.pipeline {
         case .unknown: Text("Unknown").foregroundStyle(.secondary)
         case .checking:
             HStack {
@@ -272,11 +271,26 @@ struct TranscriptionSettingsView: View {
             }
         case .ready: Label("Ready", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
         case .missing(let what): Text("Missing: \(what)").foregroundStyle(.orange)
-        case .downloading(let stage):
+        case .settingUp(let stage):
             HStack {
                 ProgressView().controlSize(.small)
                 Text(stage).foregroundStyle(.secondary).lineLimit(1)
             }
+        case .failed(let message): Text(message).foregroundStyle(.secondary).lineLimit(2)
+        }
+    }
+
+    @ViewBuilder
+    private var speakerModelStatus: some View {
+        switch speakers.model {
+        case .unknown: Text("Unknown").foregroundStyle(.secondary)
+        case .notDownloaded: Text("Downloads on first use").foregroundStyle(.secondary)
+        case .downloading(let detail):
+            HStack {
+                ProgressView().controlSize(.small)
+                Text(detail).foregroundStyle(.secondary).lineLimit(1)
+            }
+        case .ready: Label("Ready", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
         case .failed(let message): Text(message).foregroundStyle(.secondary).lineLimit(2)
         }
     }

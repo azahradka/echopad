@@ -19,6 +19,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private let sounds = SoundPlayer()
     private let meetings = MeetingNotifier()
     private let external = ExternalTranscriber()
+    private let speakers = SpeakerFinder()
     private var recorder: RecordingController!
     private var statusBar: StatusBarController!
     private var pill: RecordingPillController!
@@ -33,8 +34,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         Scribe.pinDownloads(baseURL: Self.MODEL_HOST, speechModelRevision: Self.SPEECH_MODEL_REVISION)
         Scribe.quietModelLogs()
-        external.askForToken = { request in TokenPrompt.ask(request) }
-        recorder = RecordingController(appState: appState, library: library, settings: settings.value, external: external)
+        recorder = RecordingController(appState: appState, library: library, settings: settings.value,
+                                       external: external, speakers: speakers)
         recorder.sounds = sounds
         recorder.askForTitle = { [weak self] current in await self?.askForTitle(current) }
         recorder.onError = { message in print("EchoPad: \(message)") }
@@ -56,7 +57,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         if settings.value.transcriber == .builtIn {
             loadModels()
         } else {
-            // The external command manages its own models; only leftovers need finishing.
+            // The pipeline manages its own models and the speaker model downloads on first use;
+            // only leftovers need finishing.
             Task { await finishUnfinished() }
         }
 
@@ -147,6 +149,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             .environment(settings)
             .environment(library)
             .environment(external)
+            .environment(speakers)
             .environment(\.appActions, actions))
     }
 

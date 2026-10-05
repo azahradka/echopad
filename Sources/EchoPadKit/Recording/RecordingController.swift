@@ -17,6 +17,7 @@ public final class RecordingController {
     private let recorder = AudioRecorder()
     private let scribe: Scribe
     private let external: ExternalTranscriber
+    private let speakers: SpeakerFinder
     public var settings: Settings
     public var sounds: SoundPlayer?
     public var onSaved: ((Conversation) -> Void)?
@@ -31,12 +32,13 @@ public final class RecordingController {
     private var silentSince: Date?
 
     public init(appState: AppState, library: ConversationLibrary, settings: Settings, scribe: Scribe = .shared,
-                external: ExternalTranscriber? = nil) {
+                external: ExternalTranscriber? = nil, speakers: SpeakerFinder? = nil) {
         self.appState = appState
         self.library = library
         self.settings = settings
         self.scribe = scribe
         self.external = external ?? ExternalTranscriber()
+        self.speakers = speakers ?? SpeakerFinder(scribe: scribe)
         recorder.onLevels = { [weak appState] mic, system in
             Task { @MainActor in appState?.push(microphone: mic, system: system) }
         }
@@ -184,16 +186,22 @@ public final class RecordingController {
         library.enforceAudioLimit(settings.libraryLimit)
     }
 
-    /// Runs the external command on the conversation's folder; it writes transcript.json, which is
-    /// then exported exactly like a ScribeKit transcript. The command may delete the tracks.
+    /// Finds speakers in the app (writing turns.json), then runs the external command on the
+    /// conversation's folder; it writes transcript.json, which is then exported exactly like a
+    /// ScribeKit transcript. The command may delete the tracks.
     private func processExternally(_ id: UUID) async {
         let appState = self.appState
+        let folder = library.folder(for: id)
+        let show: @Sendable @MainActor (String) -> Void = { stage in
+            // A queued job must never take the pill away from a recording in progress.
+            guard !appState.phase.isRecording else { return }
+            appState.transition(to: .processing(.external(stage)))
+        }
         do {
-            try await external.transcribe(folder: library.folder(for: id), command: settings.externalCommand) { stage in
-                // A queued job must never take the pill away from a recording in progress.
-                guard !appState.phase.isRecording else { return }
-                appState.transition(to: .processing(.external(stage)))
-            }
+            // Checked first so a missing command fails before minutes of diarization.
+            _ = try ExternalTranscriber.executable(settings.externalCommand)
+            try await speakers.writeTurns(folder: folder, onStatus: show)
+            try await external.transcribe(folder: folder, command: settings.externalCommand, onStage: show)
             library.reload(id)
             guard let conversation = library.conversation(id: id), let transcript = library.transcript(for: id) else {
                 throw ExternalTranscriber.Failure.noTranscript

@@ -3,30 +3,28 @@ import Observation
 
 /// Runs a user-chosen command instead of ScribeKit. The contract:
 ///
-///     <command> --check     prints "models: ok" or "models: missing <what>", exits 0, no network
-///     <command> --setup     downloads missing models; exit 3 = needs a Hugging Face token,
-///                           4 = the model's gate is not accepted ("needs: gate <url>"), other = failure
-///     <command> <folder>    writes <folder>/transcript.json; exit 6 = models missing
+///     <command> --check     prints "setup: ok" or "setup: missing <env|qwen3|both>", exits 0, no network
+///     <command> --setup     creates the Python environment and downloads Qwen3-ASR, printing stage lines;
+///                           exit 0, or 5 = failure (reason on the last stderr line)
+///     <command> <folder>    reads <folder>/turns.json, writes <folder>/transcript.json;
+///                           exit 6 with "needs: setup" when setup is incomplete
 ///
 /// Progress arrives on stdout as `stage: <text>` lines, failures as the last non-empty stderr line (the pipeline prints the reason last, after any warnings).
 /// Setup and transcription run one at a time, in the order they were asked for.
 @MainActor
 @Observable
 public final class ExternalTranscriber {
-    /// Shown when `--setup` asks for a token without naming the gated model.
-    nonisolated static let DEFAULT_GATE_URL = URL(string: "https://huggingface.co/pyannote/speaker-diarization-community-1")!
-    static let EXIT_NEEDS_TOKEN: Int32 = 3
-    static let EXIT_GATE_NOT_ACCEPTED: Int32 = 4
-    static let EXIT_MODELS_MISSING: Int32 = 6
+    static let EXIT_SETUP_FAILED: Int32 = 5
+    static let EXIT_NEEDS_SETUP: Int32 = 6
     /// Most recent stderr lines kept for the log; earlier ones are dropped.
     static let STDERR_LINE_LIMIT = 200
 
-    public enum ModelsStatus: Equatable, Sendable {
+    public enum PipelineStatus: Equatable, Sendable {
         case unknown
         case checking
         case ready
         case missing(String)
-        case downloading(String)
+        case settingUp(String)
         case failed(String)
     }
 
@@ -34,8 +32,7 @@ public final class ExternalTranscriber {
         case noCommand
         case notExecutable(String)
         case exited(Int32, String?)
-        case setupCancelled
-        case modelsStillMissing
+        case setupStillIncomplete
         case noTranscript
 
         public var errorDescription: String? {
@@ -46,10 +43,8 @@ public final class ExternalTranscriber {
                 return "The external transcriber \(path) is not an executable file."
             case .exited(let status, let line):
                 return line ?? "The external transcriber stopped with exit code \(status)."
-            case .setupCancelled:
-                return "The transcription models were not downloaded, so this conversation was not transcribed. Download them in Settings → Transcription, then choose Transcribe Again."
-            case .modelsStillMissing:
-                return "The external transcriber still reports missing models after downloading them."
+            case .setupStillIncomplete:
+                return "The pipeline still reports that its setup is incomplete after setting it up. Try Set Up Pipeline in Settings → Transcription."
             case .noTranscript:
                 return "The external transcriber finished without writing a readable transcript.json."
             }
@@ -71,10 +66,7 @@ public final class ExternalTranscriber {
         }
     }
 
-    public private(set) var models: ModelsStatus = .unknown
-    public private(set) var hasToken = HuggingFaceToken.isStored
-    /// Asked for a Hugging Face token; nil means the user cancelled.
-    public var askForToken: ((TokenRequest) async -> String?)?
+    public private(set) var pipeline: PipelineStatus = .unknown
 
     private var tail: Task<Void, Never>?
     private var isSettingUp = false
@@ -83,43 +75,42 @@ public final class ExternalTranscriber {
 
     // MARK: - Public entry points
 
-    /// Runs `--check` and updates ``models``. Returns nil when the answer is unknown.
+    /// Runs `--check` and updates ``pipeline``. Returns nil when the answer is unknown.
     @discardableResult
     public func check(command: String) async -> Bool? {
         guard !isSettingUp else { return nil }
-        models = .checking
-        hasToken = HuggingFaceToken.isStored
+        pipeline = .checking
         do {
             let output = try await Self.execute(try Self.executable(command), ["--check"])
             guard output.status == 0 else {
-                models = .failed(Failure.exited(output.status, output.lastErrorLine).errorDescription ?? "")
+                pipeline = .failed(Failure.exited(output.status, output.lastErrorLine).errorDescription ?? "")
                 return nil
             }
-            guard let answer = output.value(for: "models") else {
-                models = .failed("The command did not answer --check with a “models:” line.")
+            guard let answer = output.value(for: "setup") else {
+                pipeline = .failed("The command did not answer --check with a “setup:” line.")
                 return nil
             }
             if answer == "ok" {
-                models = .ready
+                pipeline = .ready
                 return true
             }
-            models = .missing(Self.describeMissing(answer))
+            pipeline = .missing(Self.describeMissing(answer))
             return false
         } catch {
-            models = .failed(RecordingController.describe(error))
+            pipeline = .failed(RecordingController.describe(error))
             return nil
         }
     }
 
-    /// Downloads missing models, asking for a token when needed. Waits for any running job.
-    public func setUpModels(command: String, onStage: @escaping @MainActor (String) -> Void = { _ in }) async throws {
+    /// Runs `--setup` (Python environment, Qwen3-ASR). Waits for any running job.
+    public func setUp(command: String, onStage: @escaping @MainActor (String) -> Void = { _ in }) async throws {
         try await serialized {
             try await self.setUp(try Self.executable(command), onStage: onStage)
         }
     }
 
-    /// Transcribes `folder` (which must already hold conversation.json and the tracks), setting
-    /// up models first when they are missing. Waits for any running job.
+    /// Transcribes `folder` (which must already hold conversation.json, the tracks and turns.json),
+    /// setting the pipeline up first when it is incomplete. Waits for any running job.
     public func transcribe(folder: URL, command: String, onStage: @escaping @MainActor (String) -> Void) async throws {
         try await serialized {
             let executable = try Self.executable(command)
@@ -127,10 +118,10 @@ public final class ExternalTranscriber {
                 try await self.setUp(executable, onStage: onStage)
             }
             var output = try await Self.execute(executable, [folder.path], onStage: onStage)
-            if output.status == Self.EXIT_MODELS_MISSING {
+            if output.status == Self.EXIT_NEEDS_SETUP {
                 try await self.setUp(executable, onStage: onStage)
                 output = try await Self.execute(executable, [folder.path], onStage: onStage)
-                if output.status == Self.EXIT_MODELS_MISSING { throw Failure.modelsStillMissing }
+                if output.status == Self.EXIT_NEEDS_SETUP { throw Failure.setupStillIncomplete }
             }
             guard output.status == 0 else {
                 Self.log(output)
@@ -139,55 +130,29 @@ public final class ExternalTranscriber {
         }
     }
 
-    public func forgetToken() {
-        HuggingFaceToken.delete()
-        hasToken = false
-    }
-
     // MARK: - Setup
 
     private func setUp(_ executable: URL, onStage: @escaping @MainActor (String) -> Void) async throws {
         isSettingUp = true
         defer { isSettingUp = false }
-        var token = HuggingFaceToken.load()
-        while true {
-            models = .downloading("Starting…")
-            let output: Output
-            do {
-                output = try await Self.execute(executable, ["--setup"], token: token) { [weak self] stage in
-                    self?.models = .downloading(stage)
-                    onStage(stage)
-                }
-            } catch {
-                models = .failed(RecordingController.describe(error))
-                throw error
+        pipeline = .settingUp("Starting…")
+        let output: Output
+        do {
+            output = try await Self.execute(executable, ["--setup"]) { [weak self] stage in
+                self?.pipeline = .settingUp(stage)
+                onStage(stage)
             }
-            let request: TokenRequest
-            switch output.status {
-            case 0:
-                models = .ready
-                return
-            case Self.EXIT_NEEDS_TOKEN:
-                request = TokenRequest(gateURL: Self.gateURL(output.value(for: "needs")), gateRejected: false, detail: nil)
-            case Self.EXIT_GATE_NOT_ACCEPTED:
-                request = TokenRequest(gateURL: Self.gateURL(output.value(for: "needs")), gateRejected: true,
-                                       detail: output.lastErrorLine)
-            default:
-                Self.log(output)
-                let failure = Failure.exited(output.status, output.lastErrorLine)
-                models = .failed(failure.errorDescription ?? "")
-                throw failure
-            }
-            guard let entered = await askForToken?(request), !entered.isEmpty else {
-                isSettingUp = false
-                await check(command: executable.path)
-                throw Failure.setupCancelled
-            }
-            // A token that cannot be stored is still used for this download.
-            try? HuggingFaceToken.save(entered)
-            hasToken = HuggingFaceToken.isStored
-            token = entered
+        } catch {
+            pipeline = .failed(RecordingController.describe(error))
+            throw error
         }
+        guard output.status == 0 else {
+            Self.log(output)
+            let failure = Failure.exited(output.status, output.lastErrorLine)
+            pipeline = .failed(failure.errorDescription ?? "")
+            throw failure
+        }
+        pipeline = .ready
     }
 
     // MARK: - Running the command
@@ -214,7 +179,7 @@ public final class ExternalTranscriber {
     }
 
     /// A clean environment: nothing from EchoPad's own environment except the data folder override.
-    static func environment(token: String? = nil) -> [String: String] {
+    nonisolated static func environment() -> [String: String] {
         let inherited = ProcessInfo.processInfo.environment
         let home = inherited["HOME"] ?? NSHomeDirectory()
         var environment = [
@@ -222,18 +187,17 @@ public final class ExternalTranscriber {
             "PATH": "\(home)/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
         ]
         if let dataDirectory = inherited["ECHOPAD_DATA_DIR"] { environment["ECHOPAD_DATA_DIR"] = dataDirectory }
-        if let token { environment["HF_TOKEN"] = token }
         return environment
     }
 
     /// Runs the command without a shell and reports each `stage:` line as it arrives.
-    static func execute(_ executable: URL, _ arguments: [String], token: String? = nil,
+    static func execute(_ executable: URL, _ arguments: [String],
                         onStage: @escaping @MainActor (String) -> Void = { _ in }) async throws -> Output {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
         process.currentDirectoryURL = executable.deletingLastPathComponent()
-        process.environment = environment(token: token)
+        process.environment = environment()
         process.standardInput = FileHandle.nullDevice
         let stdout = Pipe()
         let stderr = Pipe()
@@ -302,35 +266,19 @@ public final class ExternalTranscriber {
         return line.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
     }
 
-    /// `missing qwen3` → `Qwen3-ASR`.
+    /// `missing env` → `Python environment`, `missing qwen3` → `Qwen3-ASR`.
     nonisolated static func describeMissing(_ answer: String) -> String {
         let what = answer.hasPrefix("missing") ? answer.dropFirst("missing".count).trimmingCharacters(in: .whitespaces) : answer
         switch what {
+        case "env": return "Python environment"
         case "qwen3": return "Qwen3-ASR"
-        case "pyannote": return "pyannote"
-        case "both": return "Qwen3-ASR and pyannote"
-        default: return what.isEmpty ? "models" : what
+        case "both": return "Python environment and Qwen3-ASR"
+        default: return what.isEmpty ? "setup" : what
         }
-    }
-
-    /// The gate page from `needs: gate <url>`; only Hugging Face pages are linked.
-    nonisolated static func gateURL(_ needs: String?) -> URL {
-        guard let needs, needs.hasPrefix("gate "),
-              let url = URL(string: needs.dropFirst("gate ".count).trimmingCharacters(in: .whitespaces)),
-              url.scheme == "https", url.host == "huggingface.co" else { return DEFAULT_GATE_URL }
-        return url
     }
 
     private static func log(_ output: Output) {
         let errors = output.stderr.joined(separator: "\n")
         Log.transcription.error("External transcriber exited with \(output.status): \(errors)")
     }
-}
-
-/// Why a Hugging Face token is being asked for.
-public struct TokenRequest: Sendable {
-    public var gateURL: URL
-    /// The token was given but Hugging Face refused it for the model.
-    public var gateRejected: Bool
-    public var detail: String?
 }

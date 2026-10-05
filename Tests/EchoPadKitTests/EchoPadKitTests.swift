@@ -160,20 +160,22 @@ final class SettingsTests: XCTestCase {
 
 final class ExternalTranscriberTests: XCTestCase {
     func testParsesContractLines() {
-        XCTAssertEqual(ExternalTranscriber.value(of: "stage", in: "stage: transcribing 12/65"), "transcribing 12/65")
+        XCTAssertEqual(ExternalTranscriber.value(of: "stage", in: "stage: downloading Qwen3-ASR 1.2/4.1 GB"),
+                       "downloading Qwen3-ASR 1.2/4.1 GB")
+        XCTAssertEqual(ExternalTranscriber.value(of: "setup", in: "setup: missing env"), "missing env")
         XCTAssertNil(ExternalTranscriber.value(of: "stage", in: "Loading weights"))
-        XCTAssertEqual(ExternalTranscriber.describeMissing("missing both"), "Qwen3-ASR and pyannote")
-        XCTAssertEqual(ExternalTranscriber.describeMissing("missing pyannote"), "pyannote")
+        XCTAssertEqual(ExternalTranscriber.describeMissing("missing env"), "Python environment")
+        XCTAssertEqual(ExternalTranscriber.describeMissing("missing qwen3"), "Qwen3-ASR")
+        XCTAssertEqual(ExternalTranscriber.describeMissing("missing both"), "Python environment and Qwen3-ASR")
     }
 
-    func testOnlyLinksHuggingFaceGatePages() {
-        XCTAssertEqual(ExternalTranscriber.gateURL("gate https://huggingface.co/pyannote/x").absoluteString,
-                       "https://huggingface.co/pyannote/x")
-        XCTAssertEqual(ExternalTranscriber.gateURL("gate https://example.com/x"), ExternalTranscriber.DEFAULT_GATE_URL)
-        XCTAssertEqual(ExternalTranscriber.gateURL("hf_token"), ExternalTranscriber.DEFAULT_GATE_URL)
+    func testEnvironmentCarriesNoToken() {
+        let environment = ExternalTranscriber.environment()
+        XCTAssertEqual(Set(environment.keys).subtracting(["ECHOPAD_DATA_DIR"]), ["HOME", "PATH"])
     }
 
     func testStageTitle() {
         XCTAssertEqual(ProcessingStep.external("drafting note").title, "Drafting note…")
+        XCTAssertEqual(ProcessingStep.external("Finding speakers").title, "Finding speakers…")
     }
 }
