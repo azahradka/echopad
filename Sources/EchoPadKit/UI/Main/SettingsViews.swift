@@ -173,34 +173,120 @@ struct AppListEditor: View {
 struct TranscriptionSettingsView: View {
     @Environment(SettingsModel.self) private var settings
     @Environment(AppState.self) private var appState
+    @Environment(ExternalTranscriber.self) private var external
     @Environment(\.appActions) private var actions
 
     var body: some View {
         @Bindable var settings = settings
         Form {
             Section {
-                Picker("Language", selection: $settings.value.language) {
-                    Text("Detect automatically").tag("auto")
-                    Divider()
-                    ForEach(Languages.all, id: \.code) { Text($0.name).tag($0.code) }
+                Picker("Transcriber", selection: $settings.value.transcriber) {
+                    ForEach(Settings.TranscriberChoice.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                if settings.value.transcriber == .external {
+                    LabeledContent("Command") {
+                        HStack {
+                            TextField("Command", text: $settings.value.externalCommand, prompt: Text("/path/to/transcribe"))
+                                .labelsHidden()
+                            Button("Choose…") { chooseCommand() }
+                        }
+                    }
                 }
             } footer: {
-                Text("Parakeet v3 understands 25 European languages. Choosing one helps with short or mixed recordings.")
+                if settings.value.transcriber == .external {
+                    Text("When a recording stops, EchoPad runs this command with the conversation's folder. It writes transcript.json there, which is then saved like any other transcript.")
+                }
             }
-            Section {
-                Toggle("Identify speakers", isOn: $settings.value.identifySpeakers)
-                TextField("Your name", text: $settings.value.myName, prompt: Text("Me"))
-            } footer: {
-                Text("Voices on the system track are told apart and labelled Speaker 1, Speaker 2… You can rename them in each conversation.")
-            }
-            Section("Speech model") {
-                LabeledContent("Model", value: "Parakeet TDT 0.6B v3 + pyannote")
-                LabeledContent("Status") { modelStatus }
-                LabeledContent("Runs on", value: "Apple Neural Engine, fully offline")
+            if settings.value.transcriber == .external {
+                externalModels
+            } else {
+                builtInSections
             }
         }
         .formStyle(.grouped)
         .navigationTitle("Transcription")
+    }
+
+    @ViewBuilder
+    private var builtInSections: some View {
+        @Bindable var settings = settings
+        Section {
+            Picker("Language", selection: $settings.value.language) {
+                Text("Detect automatically").tag("auto")
+                Divider()
+                ForEach(Languages.all, id: \.code) { Text($0.name).tag($0.code) }
+            }
+        } footer: {
+            Text("Parakeet v3 understands 25 European languages. Choosing one helps with short or mixed recordings.")
+        }
+        Section {
+            Toggle("Identify speakers", isOn: $settings.value.identifySpeakers)
+            TextField("Your name", text: $settings.value.myName, prompt: Text("Me"))
+        } footer: {
+            Text("Voices on the system track are told apart and labelled Speaker 1, Speaker 2… You can rename them in each conversation.")
+        }
+        Section("Speech model") {
+            LabeledContent("Model", value: "Parakeet TDT 0.6B v3 + pyannote")
+            LabeledContent("Status") { modelStatus }
+            LabeledContent("Runs on", value: "Apple Neural Engine, fully offline")
+        }
+    }
+
+    private var externalModels: some View {
+        Section {
+            LabeledContent("Models") { externalModelStatus }
+            HStack {
+                Button("Download Models") {
+                    Task { try? await external.setUpModels(command: settings.value.externalCommand) }
+                }
+                .disabled(external.models == .ready || external.models == .checking || isDownloading)
+                Button("Forget Token") { external.forgetToken() }
+                    .disabled(!external.hasToken)
+            }
+        } header: {
+            Text("Models")
+        } footer: {
+            Text("The command downloads its speech and speaker models once. The Hugging Face token for the speaker model is kept in your login Keychain.")
+        }
+        .task(id: settings.value.externalCommand) {
+            // Waits for typing to pause before running the command.
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled, !isDownloading else { return }
+            await external.check(command: settings.value.externalCommand)
+        }
+    }
+
+    private var isDownloading: Bool {
+        if case .downloading = external.models { return true }
+        return false
+    }
+
+    @ViewBuilder
+    private var externalModelStatus: some View {
+        switch external.models {
+        case .unknown: Text("Unknown").foregroundStyle(.secondary)
+        case .checking:
+            HStack {
+                ProgressView().controlSize(.small)
+                Text("Checking…").foregroundStyle(.secondary)
+            }
+        case .ready: Label("Ready", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+        case .missing(let what): Text("Missing: \(what)").foregroundStyle(.orange)
+        case .downloading(let stage):
+            HStack {
+                ProgressView().controlSize(.small)
+                Text(stage).foregroundStyle(.secondary).lineLimit(1)
+            }
+        case .failed(let message): Text(message).foregroundStyle(.secondary).lineLimit(2)
+        }
+    }
+
+    private func chooseCommand() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.message = "Choose the command that transcribes a conversation folder."
+        if panel.runModal() == .OK, let url = panel.url { settings.value.externalCommand = url.path }
     }
 
     @ViewBuilder
