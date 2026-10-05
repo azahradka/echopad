@@ -31,6 +31,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         Scribe.pinDownloads(baseURL: Self.MODEL_HOST, speechModelRevision: Self.SPEECH_MODEL_REVISION)
+        Scribe.quietModelLogs()
         recorder = RecordingController(appState: appState, library: library, settings: settings.value)
         recorder.sounds = sounds
         recorder.askForTitle = { [weak self] current in await self?.askForTitle(current) }

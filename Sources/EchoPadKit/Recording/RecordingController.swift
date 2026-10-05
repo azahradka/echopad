@@ -253,7 +253,7 @@ public final class RecordingController {
     }
 
     private func fail(_ message: String) {
-        Log.recording.error("\(message, privacy: .public)")
+        Log.recording.error("\(message)")
         appState.transition(to: .error(message), resetAfter: 6)
         sounds?.play(.error)
         onError?(message)
