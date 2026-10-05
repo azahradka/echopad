@@ -1,0 +1,208 @@
+"""Generate synthetic test audio for the Qwen3-ASR spike.
+
+Writes a mock pipeline-integrity project meeting (four macOS `say` voices) full of
+jargon and names a generic ASR model will likely get wrong. No real recordings.
+
+Outputs (in ./testdata/):
+  meeting_10min.wav   16 kHz mono, ~10 min, multi-voice
+  meeting_10min.txt   canonical (reference) transcript, one turn per line
+  meeting_10min.turns.json  ground-truth turns [{speaker, start, end, text}]
+  clip_30s.wav / clip_30s.txt   single-voice jargon-dense ~30 s clip
+
+Usage: uv run python gen_test_audio.py
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import tempfile
+import warnings
+from pathlib import Path
+
+import numpy as np
+from scipy.io import wavfile
+
+warnings.filterwarnings("ignore", category=wavfile.WavFileWarning)
+
+OUT = Path(__file__).parent / "testdata"
+SR = 16000
+
+VOICES = {"Aron": "Samantha", "Devin": "Daniel", "Mackenzie": "Karen", "Curt": "Moira", "Colin": "Eddy (English (US))"}
+
+# Canonical text -> how a person would say it (fed to `say`). Longest keys first.
+SPOKEN = {
+    "KP 123+450": "K P one twenty three plus four fifty",
+    "KP 87+200": "K P eighty seven plus two hundred",
+    "KP 140+015": "K P one forty plus zero fifteen",
+    "LandMARC": "Land Mark",
+    "Watermarc": "Water Mark",
+    "Matt T.": "Matt T",
+    "r2r": "R 2 R",
+    "ILI": "I L I",
+    "IMU": "I M U",
+    "MFL": "M F L",
+    "BGC": "B G C",
+    "EMAT": "E mat",
+    "DoC": "D O C",
+}
+
+CLIP_30S = (
+    "Quick update on LandMARC. Devin ran the r2r comparison on the Pembina line, "
+    "matching the new ILI run against the twenty nineteen MFL data. The IMU bending strain "
+    "at KP 123+450 lines up with the girth weld near the slope that BGC flagged as a geohazard. "
+    "Curt will check the chainage, and Mackenzie will send the Watermarc crossings to Colin and Matt T. "
+    "at Cambio before we talk to Enbridge. "
+    "Devin thinks the r2r results for the IMU run will be ready by Friday."
+)
+
+TURNS = [
+    ("Aron", "Okay, let's get started. This is the weekly LandMARC sync. We've got Devin, Mackenzie and Curt in the room, and Colin said he'd join late. Matt T. sends his apologies, he's in the field this week."),
+    ("Devin", "Morning. I can kick off with the ILI update if that works."),
+    ("Aron", "Go for it."),
+    ("Devin", "So we received the new ILI deliverable for the Pembina line on Friday. It's a combo run, MFL plus IMU, so we have both the metal loss and the inertial data in one package. I've loaded it into the staging database and started the r2r alignment against the previous run."),
+    ("Mackenzie", "Which previous run are you aligning to? The twenty nineteen MFL or the twenty twenty one IMU-only run?"),
+    ("Devin", "Both, actually. The r2r for metal loss uses the twenty nineteen MFL, and the r2r for bending strain uses the twenty twenty one IMU run. The girth weld matching is the backbone for both, so I align on girth welds first and then interpolate the chainage between them."),
+    ("Curt", "How good is the girth weld match rate so far?"),
+    ("Devin", "About ninety seven percent on the first pass. The misses cluster around KP 87+200, where there was a reroute and a bunch of new girth welds went in. I'll need to handle that section by hand."),
+    ("Aron", "That reroute was the one BGC looked at, right? The geohazard near the river crossing?"),
+    ("Mackenzie", "Yes. BGC classified it as a moderate geohazard, slow moving slope, and it's in our Watermarc layer as a watercourse crossing as well. So it shows up twice in LandMARC, once as a geohazard and once as a Watermarc crossing."),
+    ("Aron", "Okay. Let's make sure those two records are linked in LandMARC so nobody double counts them."),
+    ("Mackenzie", "Will do. I'll add a note in the Watermarc crossing record pointing to the geohazard ID."),
+    ("Curt", "Can I jump in on the bending strain side? I've been looking at the IMU results around KP 123+450."),
+    ("Aron", "Please."),
+    ("Curt", "There's a bending strain feature at KP 123+450 that's grown since the last IMU run. The incremental bending strain is about zero point one five percent, which is above our screening threshold. It sits right next to a girth weld, so that's the combination we care about: strain demand at a girth weld on a slope."),
+    ("Devin", "Is that in the BGC inventory?"),
+    ("Curt", "It is. BGC has it as a geohazard site, a shallow translational slide. They recommended monitoring, and the IMU result kind of confirms the slope is still moving."),
+    ("Aron", "So that's a candidate for the Enbridge conversation as well. Enbridge asked us last month how we prioritise strain features at girth welds."),
+    ("Mackenzie", "Right, and the Pembina folks asked the same thing. I think we should write it up once and share it with both, with the client names stripped where needed."),
+    ("Aron", "Agreed. Curt, can you own the write-up on the KP 123+450 feature?"),
+    ("Curt", "Yes, I'll draft it this week. I'll include the IMU bending strain profile, the girth weld details, the chainage, and the BGC geohazard assessment."),
+    ("Devin", "One thing on chainage. The ILI vendor reports odometer distance, and our LandMARC centreline uses chainage from the as-built survey. Those drift apart by up to thirty metres in a few places. So when Curt quotes KP 123+450, we should say which reference it's in."),
+    ("Curt", "Good point. I'll quote it in LandMARC chainage and give the ILI odometer distance in brackets."),
+    ("Aron", "Let's make that the rule for everything we send out. LandMARC chainage first, ILI distance second."),
+    ("Mackenzie", "I'll add that to the reporting template."),
+    ("Aron", "Okay, next item. Cambio side. Colin isn't on yet, so I'll cover it. On the Cambio side we've finished the data model changes for the IMU tables. The new schema stores bending strain per girth weld segment, so the r2r comparison can run directly in the database rather than in spreadsheets."),
+    ("Devin", "That would save me a day per run. Right now the r2r is half in Python and half in Excel."),
+    ("Aron", "That's the idea. Matt T. built the first version of the loader before he went to the field. Devin, can you test it against the Pembina ILI data this week?"),
+    ("Devin", "Sure. I'll run the loader on the new ILI and the twenty twenty one IMU, then do the r2r in the database and compare against my spreadsheet numbers."),
+    ("Mackenzie", "While we're on Cambio, the Watermarc team asked whether LandMARC can push crossing updates to them automatically. At the moment they get a monthly export."),
+    ("Aron", "Possible, but let's not promise anything until Colin has looked at it. He owns the integration between LandMARC and Watermarc."),
+    ("Curt", "Speaking of Colin, I think he just joined."),
+    ("Colin", "Hi all, sorry I'm late. Car trouble. What did I miss?"),
+    ("Aron", "No problem. Quick summary: Devin is doing the r2r on the new Pembina ILI, Curt is writing up the bending strain feature at KP 123+450, and Mackenzie is linking the BGC geohazard and Watermarc records in LandMARC. The open question for you is whether LandMARC can push crossing updates to Watermarc automatically."),
+    ("Colin", "It can, technically. The Watermarc API accepts updates, we just never turned it on. I'd want to test it on a copy first, and I'd want Matt T. to review the mapping since he wrote the original export."),
+    ("Aron", "Fine. Can you give us an estimate next week?"),
+    ("Colin", "Yes, next Monday."),
+    ("Mackenzie", "One more geohazard item. BGC sent their updated inventory yesterday. There are four new sites, two of them on the Enbridge corridor and two on Pembina. One of the Pembina sites is near KP 140+015."),
+    ("Devin", "Is there an MFL or IMU feature near KP 140+015?"),
+    ("Mackenzie", "Not that I could see. There's a girth weld anomaly flagged by the ILI vendor, but it's a geometry call, not metal loss, and nothing on bending strain."),
+    ("Curt", "I'd still overlay the IMU profile there. Sometimes the strain signal is small but the trend between runs is what matters. That's the whole point of the r2r."),
+    ("Aron", "Agreed. Devin, add KP 140+015 to the r2r review list."),
+    ("Devin", "Done. So the r2r review list is KP 87+200, KP 123+450, and KP 140+015."),
+    ("Aron", "Good. Next, the EMAT question. Enbridge asked whether we would use EMAT data if they ran it on the crack-susceptible sections."),
+    ("Curt", "We could, but LandMARC doesn't have a crack table yet. I'd treat EMAT as a separate layer for now and not try to align it with the MFL and IMU r2r."),
+    ("Colin", "I can add an EMAT table to the Cambio schema without too much trouble. Same pattern as the IMU tables: feature, girth weld reference, chainage, run ID."),
+    ("Aron", "Let's put that on the backlog but not this sprint. Our priority is the Pembina ILI and the BGC geohazard update."),
+    ("Mackenzie", "Quick question on the DoC. Do we have the signed DoC from the ILI vendor for the new run? Pembina will ask for it."),
+    ("Devin", "I have it. It came with the deliverable. I'll put it in the LandMARC document store next to the ILI report."),
+    ("Curt", "Before action items, can we talk about the dig program? Pembina wants to know which ILI features we'd recommend for excavation this season."),
+    ("Devin", "From the MFL side, there are three metal loss features above the reporting threshold, all on the Pembina line. None of them are near a girth weld, and none are in a BGC geohazard area, so they're straightforward."),
+    ("Curt", "From the IMU side, the only one I'd push for is KP 123+450. The bending strain at that girth weld is the thing that keeps me up at night. If we dig there, I'd want strain gauges installed so we can watch the slope after the backfill."),
+    ("Mackenzie", "BGC would support that. Their report says instrumentation is the preferred option over a slope stabilisation project until we know the rate of movement."),
+    ("Colin", "If we install gauges, I'd like the readings to go straight into LandMARC rather than a separate system. We could store them against the girth weld and the chainage, the same way we store the IMU results."),
+    ("Aron", "That makes sense. Let's include that in the recommendation to Pembina. Mackenzie, could you check whether Enbridge has done anything similar? I remember Matt T. mentioning an Enbridge site with gauges on a girth weld near a river crossing."),
+    ("Mackenzie", "I'll ask Matt T. when he's back from the field. I think it was in the Watermarc data too, since it was a watercourse crossing."),
+    ("Devin", "One last data quality note. The ILI vendor's IMU data has a gap of about two hundred metres near KP 87+200, where the tool lost its odometer wheel contact. That's the reroute section again. So the r2r for bending strain will have a hole there, and we should say so in the report."),
+    ("Curt", "Noted. I'll mention the gap and flag that the geohazard at KP 87+200 can't be assessed from IMU this run."),
+    ("Aron", "Great. Let's do action items. Devin: r2r on the new Pembina ILI, test Matt T.'s loader, add KP 140+015 to the review list, and upload the DoC. Curt: write up the bending strain feature at KP 123+450 with chainage and the BGC geohazard assessment. Mackenzie: link the geohazard and Watermarc records in LandMARC and update the reporting template. Colin: estimate for the LandMARC to Watermarc push, and an EMAT table design for the backlog."),
+    ("Colin", "And I'll loop in Matt T. on the mapping."),
+    ("Aron", "Perfect. And I'll draft the note to Enbridge and Pembina on how we prioritise bending strain at girth welds once Curt's write-up is done. Anything else?"),
+    ("Curt", "Just that the BGC site visit is pencilled in for the twenty second. Mackenzie and I are going."),
+    ("Mackenzie", "Yes, and Devin, if you can get the r2r results for KP 123+450 to us before then, we can check the slope against the IMU data on site."),
+    ("Devin", "I'll aim for the twentieth."),
+    ("Aron", "Great. Thanks everyone. Same time next week."),
+]
+
+# Terms we score: canonical label -> case-sensitive-ish regex for the transcript.
+TERMS = {
+    "ILI": r"\bILI\b",
+    "IMU": r"\bIMU\b",
+    "r2r": r"\b[rR]2[rR]\b",
+    "MFL": r"\bMFL\b",
+    "EMAT": r"\bEMAT\b",
+    "DoC": r"\bDoC\b|\bDOC\b",
+    "girth weld": r"(?i)\bgirth welds?\b",
+    "bending strain": r"(?i)\bbending strain\b",
+    "chainage": r"(?i)\bchainage\b",
+    "geohazard": r"(?i)\bgeohazards?\b",
+    "KP 123+450": r"KP\s*123\s*\+\s*450",
+    "KP 87+200": r"KP\s*87\s*\+\s*200",
+    "KP 140+015": r"KP\s*140\s*\+\s*0?15",
+    "LandMARC": r"\bLandMARC\b",
+    "Watermarc": r"\bWatermarc\b",
+    "Cambio": r"\bCambio\b",
+    "BGC": r"\bBGC\b",
+    "Enbridge": r"\bEnbridge\b",
+    "Pembina": r"\bPembina\b",
+    "Devin": r"\bDevin\b",
+    "Curt": r"\bCurt\b",
+    "Mackenzie": r"\bMackenzie\b",
+    "Colin": r"\bColin\b",
+    "Matt T.": r"\bMatt T\b",
+}
+
+
+def spoken(text: str) -> str:
+    for k in sorted(SPOKEN, key=len, reverse=True):
+        text = text.replace(k, SPOKEN[k])
+    return text
+
+
+def tts(text: str, voice: str) -> np.ndarray:
+    """Render text with `say`, return 16 kHz mono float32."""
+    with tempfile.TemporaryDirectory() as td:
+        # AIFF + LEI16 is rejected by `say` on macOS 27 ("fmt?"), so ask for WAVE directly,
+        # then normalise with afconvert (16 kHz, mono, 16-bit LE).
+        raw, wav = Path(td) / "raw.wav", Path(td) / "t.wav"
+        subprocess.run(["say", "-v", voice, "--file-format=WAVE", "--data-format=LEI16@16000", "-o", str(raw), spoken(text)], check=True)
+        subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1", str(raw), str(wav)], check=True)
+        sr, data = wavfile.read(wav)
+        assert sr == SR, sr
+        return data.astype(np.float32) / 32768.0
+
+
+def write_wav(path: Path, audio: np.ndarray) -> None:
+    wavfile.write(path, SR, (np.clip(audio, -1, 1) * 32767).astype(np.int16))
+
+
+def main() -> None:
+    OUT.mkdir(exist_ok=True)
+
+    clip = tts(CLIP_30S, "Samantha")
+    write_wav(OUT / "clip_30s.wav", clip)
+    (OUT / "clip_30s.txt").write_text(CLIP_30S + "\n")
+    print(f"clip_30s.wav: {len(clip) / SR:.1f} s")
+
+    gap = np.zeros(int(0.4 * SR), dtype=np.float32)
+    parts, turns, t = [], [], 0.0
+    for spk, text in TURNS:
+        a = tts(text, VOICES[spk])
+        turns.append({"speaker": spk, "start": round(t, 2), "end": round(t + len(a) / SR, 2), "text": text})
+        parts += [a, gap]
+        t += (len(a) + len(gap)) / SR
+    full = np.concatenate(parts)
+    write_wav(OUT / "meeting_10min.wav", full)
+    (OUT / "meeting_10min.txt").write_text("\n".join(f"{s}: {x}" for s, x in TURNS) + "\n")
+    (OUT / "meeting_10min.turns.json").write_text(json.dumps(turns, indent=1))
+    words = sum(len(x.split()) for _, x in TURNS)
+    print(f"meeting_10min.wav: {len(full) / SR / 60:.2f} min, {len(TURNS)} turns, {words} words")
+
+
+def count_terms(text: str) -> dict[str, int]:
+    return {k: len(re.findall(p, text)) for k, p in TERMS.items()}
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,10 @@
+# Copy to config.toml (next to process.py) and adjust. config.toml is not checked in.
+vault = "/Users/azahradka/Documents/Obsidian/Work"
+# Default: <vault>/_attachments/transcripts (exclude it from Obsidian Sync).
+transcripts_dir = "/Users/azahradka/Documents/Obsidian/Work/_attachments/transcripts"
+glossary_path = "/Users/azahradka/Documents/Obsidian/Work/Admin/Meeting Glossary.md"
+log_book_dir = "/Users/azahradka/Documents/Obsidian/Work/Log Book"
+# Speaker label for the mic track in call mode.
+your_name = "Aron"
+# Model for the headless claude -p hand-off.
+claude_model = "sonnet"

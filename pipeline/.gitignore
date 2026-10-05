@@ -1,0 +1,17 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# spike
+.hf-cache/
+testdata/meeting_10min.wav
+
+# local config
+config.toml

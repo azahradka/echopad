@@ -21,3 +21,13 @@ audio-capture
 mic-monitor
 echopad-hotkey
 /icon.png
+
+# pipeline (Python) local state
+pipeline/.venv/
+pipeline/.hf-cache/
+pipeline/config.toml
+pipeline/results/
+pipeline/testdata/meeting_10min.wav
+pipeline/__pycache__/
+pipeline/**/__pycache__/
+pipeline/.pytest_cache/
