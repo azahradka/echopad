@@ -8,6 +8,9 @@ public struct Settings: Codable, Equatable, Sendable {
     public var defaultDestinationID: UUID?
 
     // Transcription
+    public var transcriber: TranscriberChoice
+    /// Absolute path of the command run instead of the built-in transcriber when `transcriber == .external`.
+    public var externalCommand: String
     /// ISO 639-1 code, or "auto".
     public var language: String
     public var identifySpeakers: Bool
@@ -47,10 +50,23 @@ public struct Settings: Codable, Equatable, Sendable {
         }
     }
 
+    public enum TranscriberChoice: String, Codable, CaseIterable, Sendable {
+        case builtIn, external
+
+        public var title: String {
+            switch self {
+            case .builtIn: return "Built-in (Parakeet)"
+            case .external: return "External command"
+            }
+        }
+    }
+
     public init() {
         let destination = Destination.makeDefault()
         destinations = [destination]
         defaultDestinationID = destination.id
+        transcriber = .builtIn
+        externalCommand = ""
         language = "auto"
         identifySpeakers = true
         myName = NSFullUserName().split(separator: " ").first.map(String.init) ?? "Me"
@@ -87,6 +103,8 @@ public struct Settings: Codable, Equatable, Sendable {
         }
         decode(.destinations, into: &destinations)
         defaultDestinationID = try? container.decode(UUID.self, forKey: .defaultDestinationID)
+        decode(.transcriber, into: &transcriber)
+        decode(.externalCommand, into: &externalCommand)
         decode(.language, into: &language)
         decode(.identifySpeakers, into: &identifySpeakers)
         decode(.myName, into: &myName)

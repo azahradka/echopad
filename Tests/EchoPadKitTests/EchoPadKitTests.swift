@@ -136,6 +136,18 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(settings.myName, "Łukasz")
         XCTAssertEqual(settings.destinations.count, 1)
         XCTAssertTrue(settings.identifySpeakers)
+        XCTAssertEqual(settings.transcriber, .builtIn)
+        XCTAssertEqual(settings.externalCommand, "")
+    }
+
+    func testExternalTranscriberRoundTrip() throws {
+        var settings = Settings()
+        settings.transcriber = .external
+        settings.externalCommand = "/Users/me/bin/transcribe"
+        let data = try JSONEncoder().encode(settings)
+        let json = String(decoding: data, as: UTF8.self)
+        XCTAssertTrue(json.contains(#""transcriber":"external""#), json)
+        XCTAssertEqual(try JSONDecoder().decode(Settings.self, from: data), settings)
     }
 
     func testRoundTrip() throws {
