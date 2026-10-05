@@ -1,7 +1,10 @@
 import pytest
 
 from asr import apply_replacements, chunk, leaks, max_tokens, merge_adjacent, split_long
-from glossary import CONTEXT
+import glossary
+from conftest import FIXTURES
+
+CONTEXT = glossary.context(glossary.load(FIXTURES / "glossary.md"))
 
 
 def t(start, end, speaker="A"):

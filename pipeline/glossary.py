@@ -8,9 +8,6 @@ The glossary is an Obsidian note with a Markdown table (PLAN.md section 4):
 
 Rows marked `asr: yes`, in file order (most important first), become the context.
 Every alias becomes a post-ASR replacement alias -> term.
-
-TERMS / CONTEXT below are the fixed 80-term spike glossary used by asr_probe.py and
-bench_asr.py; the pipeline reads the real glossary with load().
 """
 
 from pathlib import Path
@@ -56,34 +53,3 @@ def context(rows: list[dict]) -> str | None:
 def replacements(rows: list[dict]) -> dict[str, str]:
     """Alias -> term, from every row."""
     return {a: r["term"] for r in rows for a in r["aliases"]}
-
-
-TERMS = [
-    # people
-    "Aron", "Devin", "Curt", "Mackenzie", "Colin", "Matt T.", "Priya", "Siobhan", "Tarek", "Rhys",
-    # organisations and products
-    "Cambio", "Cambio Earth", "BGC", "BGC Engineering", "Enbridge", "Pembina", "TC Energy", "CER",
-    "Rosen", "Baker Hughes", "LandMARC", "LandMARC-LCD", "Watermarc",
-    # inspection
-    "ILI", "in-line inspection", "IMU", "inertial measurement unit", "MFL", "magnetic flux leakage",
-    "EMAT", "UT", "caliper", "r2r", "run-to-run", "odometer", "girth weld", "seam weld",
-    "bending strain", "axial strain", "ovality", "dent", "wrinkle", "metal loss", "SCC",
-    # location
-    "chainage", "KP", "KP 123+450", "centreline", "as-built", "right-of-way", "ROW",
-    # geohazards
-    "geohazard", "slope creep", "translational slide", "watercourse crossing", "scour",
-    "depth of cover", "DoC", "inclinometer", "piezometer", "strain gauge", "InSAR", "LiDAR",
-    # integrity management
-    "dig program", "excavation", "NDE", "cathodic protection", "CP", "fitness for service",
-    "probability of failure", "MAOP", "SMYS", "CSA Z662", "API 1163", "pigging", "launcher",
-    "receiver", "reroute", "backfill", "Gwen",
-]
-
-CONTEXT = (
-    "Pipeline integrity project meeting at Cambio about LandMARC and Watermarc. "
-    "Vocabulary, names and spellings: " + ", ".join(TERMS) + "."
-)
-
-if __name__ == "__main__":
-    print(len(TERMS), "terms")
-    print(CONTEXT)

@@ -14,7 +14,6 @@ Design: `../PLAN.md` section 2. Phase 0 spike results: `../spike-qwen3.md`.
 | `asr.py` | `transcribe(wav, chunks, context)` (Qwen3-ASR-1.7B bf16 via mlx-audio) |
 | `glossary.py` | Reads the glossary table; builds the ASR context and the alias → term table |
 | `merge.py` | Speaker labels, the `[hh:mm:ss] **Speaker:** text` body, EchoPad's `transcript.json` |
-| `on_save.sh` | Fallback: EchoPad post-save hook; finds the folder and runs `transcribe.sh` |
 
 ## Install
 
@@ -168,9 +167,7 @@ and clicking the notification opens the draft note (or the transcript) in Obsidi
 1. `cp config.example.toml config.toml` and check the paths. Create the glossary note.
 2. EchoPad → Settings → Transcription → **External command** →
    `/Users/azahradka/Documents/Notetaker/pipeline/transcribe.sh`.
-3. Turn **off** the destination's *After saving → Run a script* action (the fallback below), or each
-   recording is processed twice and the second run fails once the WAVs are gone.
-4. Keep audio in EchoPad's library (*Keep audio of the last* 500); the pipeline deletes the WAVs
+3. Keep audio in EchoPad's library (*Keep audio of the last* 500); the pipeline deletes the WAVs
    itself after success.
 
 EchoPad runs `transcribe.sh <conversation folder>` (the folder holds `microphone.wav`, maybe
@@ -195,20 +192,6 @@ Segments are the same merged turns as the Markdown. Speaker ids follow ScribeKit
 works out which is you). `words` is required but may be empty; we only have turn timings, and
 EchoPad's subtitle export falls back to the segment times. Verified by decoding a pipeline output
 with that exact `Transcript.swift` compiled by `swiftc`.
-
-### Fallback: built-in transcription plus post-save hook
-
-If EchoPad's own transcription is used instead, run the pipeline after it saves:
-EchoPad → Settings → Destinations → your destination → *After saving* → **Run a script** →
-`/Users/azahradka/Documents/Notetaker/pipeline/on_save.sh`, and point the destination's folder at a
-scratch folder (EchoPad's own Markdown is not used).
-
-EchoPad calls `on_save.sh <exported transcript> <exported audio or "">`. The script finds the
-conversation folder whose `conversation.json` lists that transcript in `exportedFiles` and runs
-`transcribe.sh <folder>` (same environment and log as above). Our `transcript.json` then replaces
-EchoPad's Parakeet one in the library. "Transcribe Again" or re-exporting in EchoPad runs the hook
-again; once the WAVs are gone that run fails and leaves an `error.txt`. If the folder is not found,
-it posts a failure notification (nothing reaches `pipeline.log`).
 
 ## Diarization
 
@@ -241,9 +224,3 @@ a temporary vault, loading the ASR model once; they also check the stdout stage 
 `transcript.json` written back into the folder. The hand-off is tested against a stub `claude` that sets the transcript status like the skill.
 `tests/test_models.py` runs `--check`, `--setup` without a token, and the exit-6 guard against an empty
 fake cache (downloads are stubbed to fail), plus `transcribe.sh --check` against the real cache.
-
-## Spike scripts
-
-    uv run python gen_test_audio.py   # synthetic test audio (macOS say)
-    uv run python asr_probe.py testdata/clip_30s.wav
-    uv run python bench_asr.py
