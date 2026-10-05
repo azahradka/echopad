@@ -157,3 +157,23 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(Settings.self, from: data), settings)
     }
 }
+
+final class ExternalTranscriberTests: XCTestCase {
+    func testParsesContractLines() {
+        XCTAssertEqual(ExternalTranscriber.value(of: "stage", in: "stage: transcribing 12/65"), "transcribing 12/65")
+        XCTAssertNil(ExternalTranscriber.value(of: "stage", in: "Loading weights"))
+        XCTAssertEqual(ExternalTranscriber.describeMissing("missing both"), "Qwen3-ASR and pyannote")
+        XCTAssertEqual(ExternalTranscriber.describeMissing("missing pyannote"), "pyannote")
+    }
+
+    func testOnlyLinksHuggingFaceGatePages() {
+        XCTAssertEqual(ExternalTranscriber.gateURL("gate https://huggingface.co/pyannote/x").absoluteString,
+                       "https://huggingface.co/pyannote/x")
+        XCTAssertEqual(ExternalTranscriber.gateURL("gate https://example.com/x"), ExternalTranscriber.DEFAULT_GATE_URL)
+        XCTAssertEqual(ExternalTranscriber.gateURL("hf_token"), ExternalTranscriber.DEFAULT_GATE_URL)
+    }
+
+    func testStageTitle() {
+        XCTAssertEqual(ProcessingStep.external("drafting note").title, "Drafting note…")
+    }
+}

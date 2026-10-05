@@ -18,6 +18,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkey = GlobalHotkey()
     private let sounds = SoundPlayer()
     private let meetings = MeetingNotifier()
+    private let external = ExternalTranscriber()
     private var recorder: RecordingController!
     private var statusBar: StatusBarController!
     private var pill: RecordingPillController!
@@ -32,7 +33,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         Scribe.pinDownloads(baseURL: Self.MODEL_HOST, speechModelRevision: Self.SPEECH_MODEL_REVISION)
         Scribe.quietModelLogs()
-        recorder = RecordingController(appState: appState, library: library, settings: settings.value)
+        external.askForToken = { request in TokenPrompt.ask(request) }
+        recorder = RecordingController(appState: appState, library: library, settings: settings.value, external: external)
         recorder.sounds = sounds
         recorder.askForTitle = { [weak self] current in await self?.askForTitle(current) }
         recorder.onError = { message in print("EchoPad: \(message)") }
@@ -51,7 +53,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         settings.onChange = { [weak self] new, old in self?.apply(new, old: old) }
         apply(settings.value, old: nil)
-        loadModels()
+        if settings.value.transcriber == .builtIn {
+            loadModels()
+        } else {
+            // The external command manages its own models; only leftovers need finishing.
+            Task { await finishUnfinished() }
+        }
 
         if !settings.value.hasCompletedOnboarding {
             windows.showOnboarding { [weak self] in
@@ -88,7 +95,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 print("EchoPad: \(HotkeyLabel.describe(value.hotkey)) is taken by another app.")
             }
         }
-        if old?.identifySpeakers == false && value.identifySpeakers { loadModels() }
+        if let old, old.transcriber != value.transcriber {
+            if value.transcriber == .builtIn {
+                loadModels()
+            } else {
+                modelTask?.cancel()
+                appState.model = .notLoaded
+            }
+        } else if value.transcriber == .builtIn, old?.identifySpeakers == false && value.identifySpeakers {
+            loadModels()
+        }
     }
 
     // MARK: - Models
@@ -105,9 +121,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 try await Scribe.shared.prepare(diarization: diarize) { progress in
                     Task { @MainActor in state.model = .loading(fraction: progress.fraction, detail: progress.detail) }
                 }
+                guard !Task.isCancelled else { return }
                 state.model = .ready
                 await self.finishUnfinished()
             } catch {
+                guard !Task.isCancelled else { return }
                 state.model = .failed(RecordingController.describe(error))
             }
         }
@@ -128,6 +146,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             .environment(appState)
             .environment(settings)
             .environment(library)
+            .environment(external)
             .environment(\.appActions, actions))
     }
 

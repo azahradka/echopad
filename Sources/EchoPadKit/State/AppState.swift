@@ -28,6 +28,8 @@ public enum ProcessingStep: Equatable, Sendable {
     case transcribing
     case identifyingSpeakers
     case saving
+    /// A `stage:` line from the external transcriber.
+    case external(String)
 
     public var title: String {
         switch self {
@@ -35,6 +37,7 @@ public enum ProcessingStep: Equatable, Sendable {
         case .transcribing: return "Transcribing…"
         case .identifyingSpeakers: return "Identifying speakers…"
         case .saving: return "Saving…"
+        case .external(let stage): return stage.prefix(1).uppercased() + stage.dropFirst() + "…"
         }
     }
 }

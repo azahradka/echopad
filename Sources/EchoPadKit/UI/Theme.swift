@@ -59,8 +59,12 @@ enum StatusText {
         case .saved: return .green
         case .error: return .yellow
         case .idle:
-            if case .failed = state.model { return .red }
-            return state.model.isReady ? .green : .orange
+            switch state.model {
+            case .failed: return .red
+            case .loading: return .orange
+            // Not loaded: the external transcriber is in use.
+            case .ready, .notLoaded: return .green
+            }
         }
     }
 }

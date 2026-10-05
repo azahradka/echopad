@@ -81,6 +81,14 @@ public final class ConversationLibrary {
         }
     }
 
+    /// Re-reads one conversation's metadata from disk, after an external transcriber has run on its folder.
+    public func reload(_ id: UUID) {
+        guard let index = conversations.firstIndex(where: { $0.id == id }),
+              let data = try? Data(contentsOf: folder(for: id).appendingPathComponent("conversation.json")),
+              let conversation = try? JSONDecoder().decode(Conversation.self, from: data) else { return }
+        conversations[index] = conversation
+    }
+
     /// Conversations recorded but never transcribed (the app quit or crashed in between).
     public var unfinished: [Conversation] {
         conversations.filter { $0.status == .recorded && hasAudio($0.id) }

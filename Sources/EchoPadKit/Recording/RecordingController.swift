@@ -4,7 +4,7 @@ import ScribeKit
 import SystemAudioKit
 
 /// Runs a recording from start to saved files: capture with SystemAudioKit, transcribe
-/// with ScribeKit, then export to the chosen destination and run its after-save actions.
+/// with ScribeKit (or the external command chosen in Settings), then export to the chosen destination and run its after-save actions.
 @MainActor
 public final class RecordingController {
     /// Seconds of silent system audio during a detected call before the UI warns about it.
@@ -16,6 +16,7 @@ public final class RecordingController {
     private let library: ConversationLibrary
     private let recorder = AudioRecorder()
     private let scribe: Scribe
+    private let external: ExternalTranscriber
     public var settings: Settings
     public var sounds: SoundPlayer?
     public var onSaved: ((Conversation) -> Void)?
@@ -29,11 +30,13 @@ public final class RecordingController {
     private var silenceTimer: Timer?
     private var silentSince: Date?
 
-    public init(appState: AppState, library: ConversationLibrary, settings: Settings, scribe: Scribe = .shared) {
+    public init(appState: AppState, library: ConversationLibrary, settings: Settings, scribe: Scribe = .shared,
+                external: ExternalTranscriber? = nil) {
         self.appState = appState
         self.library = library
         self.settings = settings
         self.scribe = scribe
+        self.external = external ?? ExternalTranscriber()
         recorder.onLevels = { [weak appState] mic, system in
             Task { @MainActor in appState?.push(microphone: mic, system: system) }
         }
@@ -145,6 +148,10 @@ public final class RecordingController {
         }
         library.update(id) { $0.status = .transcribing }
         appState.transition(to: .processing(.transcribing))
+        if settings.transcriber == .external {
+            await processExternally(id)
+            return
+        }
 
         let options = TranscriptionOptions(
             language: settings.language == "auto" ? nil : settings.language,
@@ -167,6 +174,30 @@ public final class RecordingController {
                 })
             try library.store(transcript, for: id)
             conversation = library.conversation(id: id) ?? conversation
+            try export(conversation, transcript: transcript)
+        } catch {
+            let message = Self.describe(error)
+            library.update(id) { $0.status = .failed(message) }
+            fail(message)
+            return
+        }
+        library.enforceAudioLimit(settings.libraryLimit)
+    }
+
+    /// Runs the external command on the conversation's folder; it writes transcript.json, which is
+    /// then exported exactly like a ScribeKit transcript. The command may delete the tracks.
+    private func processExternally(_ id: UUID) async {
+        let appState = self.appState
+        do {
+            try await external.transcribe(folder: library.folder(for: id), command: settings.externalCommand) { stage in
+                // A queued job must never take the pill away from a recording in progress.
+                guard !appState.phase.isRecording else { return }
+                appState.transition(to: .processing(.external(stage)))
+            }
+            library.reload(id)
+            guard let conversation = library.conversation(id: id), let transcript = library.transcript(for: id) else {
+                throw ExternalTranscriber.Failure.noTranscript
+            }
             try export(conversation, transcript: transcript)
         } catch {
             let message = Self.describe(error)
