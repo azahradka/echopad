@@ -7,6 +7,11 @@ import UniformTypeIdentifiers
 /// Wires state, recording, meeting detection and UI together.
 @MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Hugging Face, set explicitly so environment variables cannot redirect model downloads.
+    static let MODEL_HOST = "https://huggingface.co"
+    /// Commit of FluidInference/parakeet-tdt-0.6b-v3-coreml the speech model is fetched at.
+    static let SPEECH_MODEL_REVISION = "7dd20fe6b1797d35f5e3307e8b1732d9a178edfe"
+
     private let appState = AppState()
     private let library = ConversationLibrary()
     private let settings = SettingsModel(SettingsStore.load())
@@ -25,6 +30,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        Scribe.pinDownloads(baseURL: Self.MODEL_HOST, speechModelRevision: Self.SPEECH_MODEL_REVISION)
         recorder = RecordingController(appState: appState, library: library, settings: settings.value)
         recorder.sounds = sounds
         recorder.askForTitle = { [weak self] current in await self?.askForTitle(current) }
@@ -89,6 +95,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func loadModels() {
         modelTask?.cancel()
         let diarize = settings.value.identifySpeakers
+        // Once the models are cached, never touch the network again.
+        Scribe.offlineMode = Scribe.modelsAreCached(diarization: diarize)
         let state = appState
         state.model = .loading(fraction: nil, detail: "")
         modelTask = Task {
