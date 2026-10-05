@@ -5,10 +5,10 @@ let package = Package(
     name: "echopad",
     platforms: [.macOS("26.0")],
     dependencies: [
-        // Local checkouts while the packages are unpublished; switched to the
-        // GitHub URLs (tagged releases) when they go public.
-        .package(url: "https://github.com/pieralukasz/ScribeKit.git", from: "0.1.0"),
-        .package(url: "https://github.com/pieralukasz/SystemAudioKit.git", from: "0.1.0"),
+        // Our reviewed forks, on their `notetaker` branch; to be pinned with `revision:`
+        // once those branches are stable.
+        .package(url: "https://github.com/azahradka/ScribeKit.git", branch: "notetaker"),
+        .package(url: "https://github.com/azahradka/SystemAudioKit.git", branch: "notetaker"),
     ],
     targets: [
         .target(
