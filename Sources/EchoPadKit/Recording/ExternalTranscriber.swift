@@ -8,7 +8,7 @@ import Observation
 ///                           4 = the model's gate is not accepted ("needs: gate <url>"), other = failure
 ///     <command> <folder>    writes <folder>/transcript.json; exit 6 = models missing
 ///
-/// Progress arrives on stdout as `stage: <text>` lines, failures as the first stderr line.
+/// Progress arrives on stdout as `stage: <text>` lines, failures as the last non-empty stderr line (the pipeline prints the reason last, after any warnings).
 /// Setup and transcription run one at a time, in the order they were asked for.
 @MainActor
 @Observable
@@ -18,7 +18,7 @@ public final class ExternalTranscriber {
     static let EXIT_NEEDS_TOKEN: Int32 = 3
     static let EXIT_GATE_NOT_ACCEPTED: Int32 = 4
     static let EXIT_MODELS_MISSING: Int32 = 6
-    /// stderr lines kept for the log; the rest is drained and dropped.
+    /// Most recent stderr lines kept for the log; earlier ones are dropped.
     static let STDERR_LINE_LIMIT = 200
 
     public enum ModelsStatus: Equatable, Sendable {
@@ -62,8 +62,8 @@ public final class ExternalTranscriber {
         var stdout: [String]
         var stderr: [String]
 
-        var firstErrorLine: String? {
-            stderr.lazy.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.first { !$0.isEmpty }
+        var lastErrorLine: String? {
+            stderr.reversed().lazy.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.first { !$0.isEmpty }
         }
 
         func value(for key: String) -> String? {
@@ -92,7 +92,7 @@ public final class ExternalTranscriber {
         do {
             let output = try await Self.execute(try Self.executable(command), ["--check"])
             guard output.status == 0 else {
-                models = .failed(Failure.exited(output.status, output.firstErrorLine).errorDescription ?? "")
+                models = .failed(Failure.exited(output.status, output.lastErrorLine).errorDescription ?? "")
                 return nil
             }
             guard let answer = output.value(for: "models") else {
@@ -134,7 +134,7 @@ public final class ExternalTranscriber {
             }
             guard output.status == 0 else {
                 Self.log(output)
-                throw Failure.exited(output.status, output.firstErrorLine)
+                throw Failure.exited(output.status, output.lastErrorLine)
             }
         }
     }
@@ -171,10 +171,10 @@ public final class ExternalTranscriber {
                 request = TokenRequest(gateURL: Self.gateURL(output.value(for: "needs")), gateRejected: false, detail: nil)
             case Self.EXIT_GATE_NOT_ACCEPTED:
                 request = TokenRequest(gateURL: Self.gateURL(output.value(for: "needs")), gateRejected: true,
-                                       detail: output.firstErrorLine)
+                                       detail: output.lastErrorLine)
             default:
                 Self.log(output)
-                let failure = Failure.exited(output.status, output.firstErrorLine)
+                let failure = Failure.exited(output.status, output.lastErrorLine)
                 models = .failed(failure.errorDescription ?? "")
                 throw failure
             }
@@ -283,10 +283,13 @@ public final class ExternalTranscriber {
         }
     }
 
-    /// Keeps the first `limit` lines and drains the rest.
+    /// Keeps the last `limit` lines.
     nonisolated static func collect(_ lines: AsyncStream<String>, limit: Int) async -> [String] {
         var kept: [String] = []
-        for await line in lines where kept.count < limit { kept.append(line) }
+        for await line in lines {
+            kept.append(line)
+            if kept.count > limit { kept.removeFirst() }
+        }
         return kept
     }
 
