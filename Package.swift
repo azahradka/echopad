@@ -7,8 +7,8 @@ let package = Package(
     dependencies: [
         // Our reviewed forks, on their `notetaker` branch; to be pinned with `revision:`
         // once those branches are stable.
-        .package(url: "https://github.com/azahradka/ScribeKit.git", branch: "notetaker"),
-        .package(url: "https://github.com/azahradka/SystemAudioKit.git", branch: "notetaker"),
+        .package(url: "https://github.com/azahradka/ScribeKit.git", revision: "2ae61e8a0e350fdca03ff16dff90eae1da51331f"),
+        .package(url: "https://github.com/azahradka/SystemAudioKit.git", revision: "216cf9a7e3f6d70cf6b70c532e7a13a5a421c27d"),
     ],
     targets: [
         .target(

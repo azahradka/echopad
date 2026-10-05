@@ -1,5 +1,5 @@
 {
-  "originHash" : "10790e21162274280c66b04c143c2c25579b8d421dcace15c9e0f02d26b84665",
+  "originHash" : "9619060c5b3c2397f578d3e4104e92cc2753f1d55027e84af43679c09b1ad4ab",
   "pins" : [
     {
       "identity" : "fluidaudio",
@@ -15,8 +15,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/azahradka/ScribeKit.git",
       "state" : {
-        "branch" : "notetaker",
-        "revision" : "60f0187075658704b6ea7e60c5f0bb739857a54f"
+        "revision" : "2ae61e8a0e350fdca03ff16dff90eae1da51331f"
       }
     },
     {
@@ -24,8 +23,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/azahradka/SystemAudioKit.git",
       "state" : {
-        "branch" : "notetaker",
-        "revision" : "050e941e6cf45d560b48289615cdefaa1f3f020a"
+        "revision" : "216cf9a7e3f6d70cf6b70c532e7a13a5a421c27d"
       }
     }
   ],
