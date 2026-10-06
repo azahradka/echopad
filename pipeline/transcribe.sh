@@ -29,7 +29,7 @@ qwen3_files="config.json model.safetensors model.safetensors.index.json tokenize
              merges.txt preprocessor_config.json chat_template.json generation_config.json"
 
 path="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-clean=(env -i HOME="$HOME" PATH="$path" HF_HOME="$base/models" HF_HUB_DISABLE_TELEMETRY=1
+clean=(env -i HOME="$HOME" USER="${USER:-$(id -un)}" LOGNAME="${LOGNAME:-$(id -un)}" PATH="$path" HF_HOME="$base/models" HF_HUB_DISABLE_TELEMETRY=1
        UV_PROJECT_ENVIRONMENT="$venv" UV_CACHE_DIR="$base/uv-cache" UV_PYTHON_INSTALL_DIR="$base/python"
        UV_PYTHON_PREFERENCE=only-managed PYTHONDONTWRITEBYTECODE=1)
 [ -n "${ECHOPAD_DATA_DIR:-}" ] && clean+=(ECHOPAD_DATA_DIR="$ECHOPAD_DATA_DIR")

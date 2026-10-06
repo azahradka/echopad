@@ -200,9 +200,13 @@ public final class ExternalTranscriber {
     nonisolated static func environment() -> [String: String] {
         let inherited = ProcessInfo.processInfo.environment
         let home = inherited["HOME"] ?? NSHomeDirectory()
+        let user = inherited["USER"] ?? NSUserName()
         var environment = [
             "HOME": home,
             "PATH": "\(home)/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+            // The Claude CLI finds its Keychain credentials by USER; without it every run looks logged out.
+            "USER": user,
+            "LOGNAME": inherited["LOGNAME"] ?? user,
         ]
         if let dataDirectory = inherited["ECHOPAD_DATA_DIR"] { environment["ECHOPAD_DATA_DIR"] = dataDirectory }
         return environment

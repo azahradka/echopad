@@ -186,14 +186,20 @@ and clicking the notification opens the draft note (or the transcript) in Obsidi
 
 ## Wire into EchoPad
 
-Until the bundle (PLAN.md Phase B) ships it inside the app:
+The app ships this directory inside its bundle (`Contents/Resources/pipeline/`, with a pinned `uv`
+in `bin/`) and runs `transcribe.sh` itself. Nothing is configured by hand:
 
-1. Put the settings in `~/Library/Application Support/EchoPad/config.toml` (start from
-   `config.example.toml`). Create the glossary note.
-2. EchoPad → Settings → Transcription → **External command** → this directory's `transcribe.sh`.
-   The app runs `--check` and, if needed, `--setup`.
-3. Keep audio in EchoPad's library (*Keep audio of the last* 500); the pipeline deletes the WAVs
+1. EchoPad → Settings → Transcription → Transcriber → **Notetaker pipeline**.
+2. Choose the **Vault folder**; the Log Book, Transcripts and Glossary defaults match this vault.
+   The app writes `~/Library/Application Support/EchoPad/config.toml` from these settings.
+3. Press **Set Up Pipeline**: speaker model, Python environment (`--setup`), Qwen3, then a Claude
+   CLI check. If the Claude row says not logged in, run `claude auth login --claudeai` in Terminal.
+4. Keep audio in EchoPad's library (*Keep audio of the last* 500); the pipeline deletes the WAVs
    itself after success.
+
+For a development checkout that is not bundled, start the app with `ECHOPAD_PIPELINE_DIR` pointing
+at this directory. The clean environment the app and `transcribe.sh` build must include `USER`
+(and `LOGNAME`): the Claude CLI looks up its Keychain credentials by `USER`.
 
 **`transcript.json`** matches ScribeKit's `Transcript` (`vendor/ScribeKit/Sources/ScribeKit/Transcript.swift`,
 pinned rev `2ae61e8`), which EchoPad decodes with a plain `JSONDecoder`:

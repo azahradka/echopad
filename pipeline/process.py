@@ -303,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("<folder> and --config are required (or --setup)")
     cfg = load_config(args.config)
     transcripts_dir = Path(cfg["transcripts_dir"])
-    transcripts_dir.mkdir(exist_ok=True)
+    transcripts_dir.mkdir(parents=True, exist_ok=True)
     with open(transcripts_dir / ".pipeline.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # one recording at a time; later invocations wait here
         return process(Path(args.folder).resolve(), cfg, args)
