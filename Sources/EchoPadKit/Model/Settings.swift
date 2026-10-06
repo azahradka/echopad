@@ -9,13 +9,24 @@ public struct Settings: Codable, Equatable, Sendable {
 
     // Transcription
     public var transcriber: TranscriberChoice
-    /// Absolute path of the command run instead of the built-in transcriber when `transcriber == .external`.
-    public var externalCommand: String
     /// ISO 639-1 code, or "auto".
     public var language: String
     public var identifySpeakers: Bool
     /// Name for the local speaker in transcripts.
     public var myName: String
+
+    // Notetaker pipeline (written to its config.toml, see ``PipelineConfig``)
+    /// Absolute path of the Obsidian vault; empty until chosen.
+    public var vaultPath: String
+    /// Folders and the glossary note, relative to the vault.
+    public var logBookFolder: String
+    public var transcriptsFolder: String
+    public var glossaryPath: String
+    /// Days a transcript is kept in the vault before the pipeline deletes it.
+    public var transcriptRetentionDays: Int
+    public var draftModel: DraftModel
+    /// Lets the note-drafting step look up the meeting in the Outlook calendar.
+    public var looksUpCalendar: Bool
 
     // Capture
     /// nil means the system default microphone.
@@ -50,26 +61,50 @@ public struct Settings: Codable, Equatable, Sendable {
         }
     }
 
+    /// `external` is the Notetaker pipeline shipped inside the app (the raw value predates the bundle).
     public enum TranscriberChoice: String, Codable, CaseIterable, Sendable {
         case builtIn, external
 
         public var title: String {
             switch self {
             case .builtIn: return "Built-in (Parakeet)"
-            case .external: return "External command"
+            case .external: return "Notetaker pipeline"
             }
         }
     }
+
+    /// The Claude model that drafts the meeting note.
+    public enum DraftModel: String, Codable, CaseIterable, Sendable {
+        case sonnet, opus
+
+        public var title: String {
+            switch self {
+            case .sonnet: return "Sonnet"
+            case .opus: return "Opus"
+            }
+        }
+    }
+
+    public static let DEFAULT_LOG_BOOK_FOLDER = "Log Book"
+    public static let DEFAULT_TRANSCRIPTS_FOLDER = "_attachments/transcripts"
+    public static let DEFAULT_GLOSSARY_PATH = "Admin/Meeting Glossary.md"
+    public static let DEFAULT_TRANSCRIPT_RETENTION_DAYS = 3
 
     public init() {
         let destination = Destination.makeDefault()
         destinations = [destination]
         defaultDestinationID = destination.id
         transcriber = .builtIn
-        externalCommand = ""
         language = "auto"
         identifySpeakers = true
         myName = NSFullUserName().split(separator: " ").first.map(String.init) ?? "Me"
+        vaultPath = ""
+        logBookFolder = Self.DEFAULT_LOG_BOOK_FOLDER
+        transcriptsFolder = Self.DEFAULT_TRANSCRIPTS_FOLDER
+        glossaryPath = Self.DEFAULT_GLOSSARY_PATH
+        transcriptRetentionDays = Self.DEFAULT_TRANSCRIPT_RETENTION_DAYS
+        draftModel = .sonnet
+        looksUpCalendar = true
         microphoneUID = nil
         recordsMicrophone = true
         systemAudio = .everything
@@ -94,7 +129,9 @@ public struct Settings: Codable, Equatable, Sendable {
 
     public static let LIBRARY_LIMITS = [0, 10, 25, 50, 100, 500]
 
-    // Decoding tolerates missing keys, so settings files from older versions keep working.
+    // Decoding tolerates missing keys, so settings files from older versions keep working. Keys
+    // that no longer exist (such as `externalCommand`, replaced by the bundled pipeline) are
+    // ignored and dropped on the next save.
     public init(from decoder: Decoder) throws {
         self.init()
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -104,10 +141,16 @@ public struct Settings: Codable, Equatable, Sendable {
         decode(.destinations, into: &destinations)
         defaultDestinationID = try? container.decode(UUID.self, forKey: .defaultDestinationID)
         decode(.transcriber, into: &transcriber)
-        decode(.externalCommand, into: &externalCommand)
         decode(.language, into: &language)
         decode(.identifySpeakers, into: &identifySpeakers)
         decode(.myName, into: &myName)
+        decode(.vaultPath, into: &vaultPath)
+        decode(.logBookFolder, into: &logBookFolder)
+        decode(.transcriptsFolder, into: &transcriptsFolder)
+        decode(.glossaryPath, into: &glossaryPath)
+        decode(.transcriptRetentionDays, into: &transcriptRetentionDays)
+        decode(.draftModel, into: &draftModel)
+        decode(.looksUpCalendar, into: &looksUpCalendar)
         microphoneUID = try? container.decode(String.self, forKey: .microphoneUID)
         decode(.recordsMicrophone, into: &recordsMicrophone)
         decode(.systemAudio, into: &systemAudio)

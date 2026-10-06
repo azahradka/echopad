@@ -223,6 +223,33 @@ public final class SpeakerFinder {
                     maxSpeakers: SpeakerTurns.IN_PERSON_SPEAKERS.upperBound)
     }
 
+    /// Downloads the speaker model when it is not cached yet (Set Up Pipeline, and before each
+    /// transcription), reporting "Downloading speaker model NN%".
+    public func prepareModel(onStatus: @escaping @Sendable @MainActor (String) -> Void = { _ in }) async throws {
+        guard !Scribe.diarizationModelIsCached() else {
+            model = .ready
+            return
+        }
+        Scribe.offlineMode = false
+        model = .downloading("Downloading speaker model")
+        onStatus("Downloading speaker model")
+        do {
+            try await scribe.prepareDiarizationModel { [weak self] progress in
+                Task { @MainActor in
+                    guard let self, case .downloading = self.model else { return }
+                    let text = "Downloading speaker model" + (progress.fraction.map { " \(Int($0 * 100))%" } ?? "")
+                    self.model = .downloading(text)
+                    onStatus(text)
+                }
+            }
+        } catch {
+            let reason = RecordingController.describe(error)
+            model = .failed(reason)
+            throw Failure.diarization(reason)
+        }
+        model = .ready
+    }
+
     /// Decides the mode, diarizes the right track and writes `<folder>/turns.json`.
     /// `onStatus` gets "Finding speakers" or the speaker model's download progress.
     @discardableResult

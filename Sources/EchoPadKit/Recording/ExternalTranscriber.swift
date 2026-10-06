@@ -1,7 +1,8 @@
 import Foundation
 import Observation
 
-/// Runs a user-chosen command instead of ScribeKit. The contract:
+/// Runs the Notetaker pipeline (`pipeline/transcribe.sh`, shipped in the app's Resources) instead of
+/// ScribeKit. The contract:
 ///
 ///     <command> --check     prints "setup: ok" or "setup: missing <env|qwen3|both>", exits 0, no network
 ///     <command> --setup     creates the Python environment and downloads Qwen3-ASR, printing stage lines;
@@ -28,8 +29,11 @@ public final class ExternalTranscriber {
         case failed(String)
     }
 
+    /// Lets an unbundled development build (`swift run`) use a checkout's `pipeline/` folder.
+    nonisolated static let PIPELINE_DIR_VARIABLE = "ECHOPAD_PIPELINE_DIR"
+
     public enum Failure: LocalizedError, Equatable {
-        case noCommand
+        case pipelineMissing
         case notExecutable(String)
         case exited(Int32, String?)
         case setupStillIncomplete
@@ -37,16 +41,16 @@ public final class ExternalTranscriber {
 
         public var errorDescription: String? {
             switch self {
-            case .noCommand:
-                return "Choose the external transcriber command in Settings → Transcription."
+            case .pipelineMissing:
+                return "This build of EchoPad does not contain the Notetaker pipeline. Build the app with scripts/bundle-app.sh, or set ECHOPAD_PIPELINE_DIR to a checkout's pipeline folder."
             case .notExecutable(let path):
-                return "The external transcriber \(path) is not an executable file."
+                return "The Notetaker pipeline \(path) is not an executable file."
             case .exited(let status, let line):
-                return line ?? "The external transcriber stopped with exit code \(status)."
+                return line ?? "The Notetaker pipeline stopped with exit code \(status)."
             case .setupStillIncomplete:
                 return "The pipeline still reports that its setup is incomplete after setting it up. Try Set Up Pipeline in Settings → Transcription."
             case .noTranscript:
-                return "The external transcriber finished without writing a readable transcript.json."
+                return "The Notetaker pipeline finished without writing a readable transcript.json."
             }
         }
     }
@@ -77,11 +81,11 @@ public final class ExternalTranscriber {
 
     /// Runs `--check` and updates ``pipeline``. Returns nil when the answer is unknown.
     @discardableResult
-    public func check(command: String) async -> Bool? {
+    public func check() async -> Bool? {
         guard !isSettingUp else { return nil }
         pipeline = .checking
         do {
-            let output = try await Self.execute(try Self.executable(command), ["--check"])
+            let output = try await Self.execute(try Self.command(), ["--check"])
             guard output.status == 0 else {
                 pipeline = .failed(Failure.exited(output.status, output.lastErrorLine).errorDescription ?? "")
                 return nil
@@ -103,18 +107,18 @@ public final class ExternalTranscriber {
     }
 
     /// Runs `--setup` (Python environment, Qwen3-ASR). Waits for any running job.
-    public func setUp(command: String, onStage: @escaping @MainActor (String) -> Void = { _ in }) async throws {
+    public func setUp(onStage: @escaping @MainActor (String) -> Void = { _ in }) async throws {
         try await serialized {
-            try await self.setUp(try Self.executable(command), onStage: onStage)
+            try await self.setUp(try Self.command(), onStage: onStage)
         }
     }
 
     /// Transcribes `folder` (which must already hold conversation.json, the tracks and turns.json),
     /// setting the pipeline up first when it is incomplete. Waits for any running job.
-    public func transcribe(folder: URL, command: String, onStage: @escaping @MainActor (String) -> Void) async throws {
+    public func transcribe(folder: URL, onStage: @escaping @MainActor (String) -> Void) async throws {
         try await serialized {
-            let executable = try Self.executable(command)
-            if await self.check(command: command) == false {
+            let executable = try Self.command()
+            if await self.check() == false {
                 try await self.setUp(executable, onStage: onStage)
             }
             var output = try await Self.execute(executable, [folder.path], onStage: onStage)
@@ -167,9 +171,23 @@ public final class ExternalTranscriber {
         try await task.value
     }
 
-    static func executable(_ command: String) throws -> URL {
-        let path = (command.trimmingCharacters(in: .whitespaces) as NSString).expandingTildeInPath
-        guard !path.isEmpty else { throw Failure.noCommand }
+    /// `transcribe.sh` in the app bundle (`Contents/Resources/pipeline/`), else in
+    /// `$ECHOPAD_PIPELINE_DIR` for a development build that is not bundled.
+    nonisolated static func command(resources: URL? = Bundle.main.resourceURL,
+                                    environment: [String: String] = ProcessInfo.processInfo.environment) throws -> URL {
+        let fm = FileManager.default
+        if let bundled = resources?.appendingPathComponent("pipeline/transcribe.sh"), fm.fileExists(atPath: bundled.path) {
+            return try executable(bundled.path)
+        }
+        if let directory = environment[PIPELINE_DIR_VARIABLE], !directory.isEmpty {
+            let path = URL(fileURLWithPath: (directory as NSString).expandingTildeInPath)
+                .appendingPathComponent("transcribe.sh").standardizedFileURL.path
+            return try executable(path)
+        }
+        throw Failure.pipelineMissing
+    }
+
+    nonisolated static func executable(_ path: String) throws -> URL {
         var isDirectory: ObjCBool = false
         guard path.hasPrefix("/"), FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
               !isDirectory.boolValue, FileManager.default.isExecutableFile(atPath: path) else {
@@ -190,8 +208,9 @@ public final class ExternalTranscriber {
         return environment
     }
 
-    /// Runs the command without a shell and reports each `stage:` line as it arrives.
-    static func execute(_ executable: URL, _ arguments: [String],
+    /// Runs the command without a shell and reports each `stage:` line as it arrives. With a
+    /// `timeout`, a command still running after it is terminated.
+    static func execute(_ executable: URL, _ arguments: [String], timeout: Duration? = nil,
                         onStage: @escaping @MainActor (String) -> Void = { _ in }) async throws -> Output {
         let process = Process()
         process.executableURL = executable
@@ -209,6 +228,13 @@ public final class ExternalTranscriber {
             exited.finish()
         }
         try process.run()
+        let watchdog = timeout.map { limit in
+            Task { [process = UncheckedProcess(process)] in
+                try? await Task.sleep(for: limit)
+                if !Task.isCancelled, process.value.isRunning { process.value.terminate() }
+            }
+        }
+        defer { watchdog?.cancel() }
 
         // Both pipes are drained at once so a chatty stderr cannot block the command.
         async let errorLines = collect(lines(of: stderr.fileHandleForReading), limit: STDERR_LINE_LIMIT)
@@ -279,6 +305,12 @@ public final class ExternalTranscriber {
 
     private static func log(_ output: Output) {
         let errors = output.stderr.joined(separator: "\n")
-        Log.transcription.error("External transcriber exited with \(output.status): \(errors)")
+        Log.transcription.error("Notetaker pipeline exited with \(output.status): \(errors)")
     }
+}
+
+/// Lets the timeout task hold the running process; it only reads `isRunning` and calls `terminate()`.
+private struct UncheckedProcess: @unchecked Sendable {
+    let value: Process
+    init(_ value: Process) { self.value = value }
 }

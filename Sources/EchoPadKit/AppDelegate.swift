@@ -18,8 +18,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkey = GlobalHotkey()
     private let sounds = SoundPlayer()
     private let meetings = MeetingNotifier()
-    private let external = ExternalTranscriber()
-    private let speakers = SpeakerFinder()
+    private let external: ExternalTranscriber
+    private let speakers: SpeakerFinder
+    private let pipelineSetup: PipelineSetup
     private var recorder: RecordingController!
     private var statusBar: StatusBarController!
     private var pill: RecordingPillController!
@@ -27,6 +28,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var modelTask: Task<Void, Never>?
 
     public override init() {
+        external = ExternalTranscriber()
+        speakers = SpeakerFinder()
+        pipelineSetup = PipelineSetup(external: external, speakers: speakers)
         super.init()
     }
 
@@ -89,6 +93,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func apply(_ value: Settings, old: Settings?) {
         recorder.settings = value
+        writePipelineConfig(value, old: old)
         sounds.isEnabled = value.playsSounds
         pill.isEnabled = value.showsPill
         meetings.setEnabled(value.detectsMeetings)
@@ -106,6 +111,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } else if value.transcriber == .builtIn, old?.identifySpeakers == false && value.identifySpeakers {
             loadModels()
+        }
+    }
+
+    /// Keeps the pipeline's config.toml in step with Settings: rewritten when its values change,
+    /// and written at launch when it is missing and a vault is set.
+    private func writePipelineConfig(_ value: Settings, old: Settings?) {
+        guard let config = PipelineConfig(value) else { return }
+        do {
+            if let old {
+                if PipelineConfig(old) != config { try config.write() }
+            } else {
+                try config.writeIfMissing()
+            }
+        } catch {
+            Log.transcription.error("Could not write the pipeline's config.toml: \(RecordingController.describe(error))")
         }
     }
 
@@ -150,6 +170,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             .environment(library)
             .environment(external)
             .environment(speakers)
+            .environment(pipelineSetup)
             .environment(\.appActions, actions))
     }
 

@@ -175,6 +175,7 @@ struct TranscriptionSettingsView: View {
     @Environment(AppState.self) private var appState
     @Environment(ExternalTranscriber.self) private var external
     @Environment(SpeakerFinder.self) private var speakers
+    @Environment(PipelineSetup.self) private var setup
     @Environment(\.appActions) private var actions
 
     var body: some View {
@@ -184,22 +185,13 @@ struct TranscriptionSettingsView: View {
                 Picker("Transcriber", selection: $settings.value.transcriber) {
                     ForEach(Settings.TranscriberChoice.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
-                if settings.value.transcriber == .external {
-                    LabeledContent("Command") {
-                        HStack {
-                            TextField("Command", text: $settings.value.externalCommand, prompt: Text("/path/to/transcribe"))
-                                .labelsHidden()
-                            Button("Choose…") { chooseCommand() }
-                        }
-                    }
-                }
             } footer: {
                 if settings.value.transcriber == .external {
-                    Text("When a recording stops, EchoPad finds the speakers, writes turns.json to the conversation's folder and runs this command with that folder. The command writes transcript.json there, which is then saved like any other transcript.")
+                    Text("When a recording stops, EchoPad finds the speakers and runs the Notetaker pipeline built into the app: it transcribes with Qwen3-ASR on this Mac, saves the transcript in your vault and has Claude draft a meeting note in your Log Book.")
                 }
             }
             if settings.value.transcriber == .external {
-                externalPipeline
+                pipelineSections
             } else {
                 builtInSections
             }
@@ -233,35 +225,104 @@ struct TranscriptionSettingsView: View {
         }
     }
 
-    private var externalPipeline: some View {
+    @ViewBuilder
+    private var pipelineSections: some View {
+        @Bindable var settings = settings
         Section {
-            LabeledContent("Pipeline") { pipelineStatus }
+            LabeledContent("Pipeline") { pipelineSummary }
             LabeledContent("Speaker model") { speakerModelStatus }
+            LabeledContent("Speech recognition") { speechStatus }
+            LabeledContent("Claude") { claudeStatus }
+            claudeInstructions
             Button("Set Up Pipeline") {
-                Task { try? await external.setUp(command: settings.value.externalCommand) }
+                Task { await runSetup() }
             }
-            .disabled(external.pipeline == .ready || external.pipeline == .checking || isSettingUp)
+            .disabled(setup.isRunning || setup.isComplete || appState.phase.isBusy || isChecking)
         } header: {
             Text("Pipeline")
         } footer: {
-            Text("Setting up creates the pipeline's Python environment and downloads Qwen3-ASR once. EchoPad finds speakers itself with a 30 MB model, downloaded the first time a recording is transcribed.")
+            Text("Set Up Pipeline downloads the speaker model (30 MB), creates the pipeline's Python environment, downloads Qwen3-ASR (4.1 GB) once, and checks that Claude Code is logged in.")
         }
-        .task(id: settings.value.externalCommand) {
-            speakers.refresh()
-            // Waits for typing to pause before running the command.
-            try? await Task.sleep(for: .milliseconds(500))
-            guard !Task.isCancelled, !isSettingUp else { return }
-            await external.check(command: settings.value.externalCommand)
+        .task { await setup.refresh() }
+
+        Section {
+            LabeledContent("Vault folder") {
+                HStack {
+                    Text(settings.value.vaultPath.isEmpty ? "Not chosen" : (settings.value.vaultPath as NSString).abbreviatingWithTildeInPath)
+                        .foregroundStyle(settings.value.vaultPath.isEmpty ? .orange : .secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Button("Choose…") { chooseVault() }
+                }
+            }
+            TextField("Log Book subfolder", text: $settings.value.logBookFolder, prompt: Text(Settings.DEFAULT_LOG_BOOK_FOLDER))
+            TextField("Transcripts subfolder", text: $settings.value.transcriptsFolder,
+                      prompt: Text(Settings.DEFAULT_TRANSCRIPTS_FOLDER))
+            TextField("Glossary", text: $settings.value.glossaryPath, prompt: Text(Settings.DEFAULT_GLOSSARY_PATH))
+            TextField("Your name", text: $settings.value.myName, prompt: Text("Me"))
+        } header: {
+            Text("Obsidian")
+        } footer: {
+            Text("The vault is required. Folders and the glossary note are relative to it. Exclude the transcripts subfolder from Obsidian Sync so transcripts stay on this Mac. Your name labels your microphone in calls.")
+        }
+
+        Section {
+            Stepper(value: $settings.value.transcriptRetentionDays, in: 0...365) {
+                Text("Keep transcripts for \(settings.value.transcriptRetentionDays) \(settings.value.transcriptRetentionDays == 1 ? "day" : "days")")
+            }
+            Picker("Draft with", selection: $settings.value.draftModel) {
+                ForEach(Settings.DraftModel.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            Toggle("Look up the meeting in Outlook", isOn: $settings.value.looksUpCalendar)
+        } header: {
+            Text("Notes")
+        } footer: {
+            Text("A transcript can say retain: keep or retain: none to override how long it is kept. The Outlook lookup gives the note its title and attendees.")
         }
     }
 
-    private var isSettingUp: Bool {
-        if case .settingUp = external.pipeline { return true }
-        return false
+    private var isChecking: Bool {
+        external.pipeline == .checking || setup.claude == .checking
+    }
+
+    /// Set Up Pipeline, with each step in the Pipeline row and the pill.
+    private func runSetup() async {
+        let appState = self.appState
+        let problem = await setup.run { step in
+            guard !appState.phase.isRecording else { return }
+            appState.transition(to: .processing(.external(step)))
+        }
+        guard case .processing(.external) = appState.phase else { return }
+        if let problem {
+            appState.transition(to: .error(problem), resetAfter: 6)
+        } else {
+            appState.transition(to: .idle)
+        }
     }
 
     @ViewBuilder
-    private var pipelineStatus: some View {
+    private var pipelineSummary: some View {
+        if let progress = setup.progress {
+            HStack {
+                ProgressView().controlSize(.small)
+                Text(progress).foregroundStyle(.secondary).lineLimit(1)
+            }
+        } else {
+            let text = setup.summary(vaultChosen: !settings.value.vaultPath.isEmpty)
+            switch text {
+            case "Ready": Label("Ready", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+            case "Checking…":
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text(text).foregroundStyle(.secondary)
+                }
+            default: Text(text).foregroundStyle(.orange).lineLimit(2)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var speechStatus: some View {
         switch external.pipeline {
         case .unknown: Text("Unknown").foregroundStyle(.secondary)
         case .checking:
@@ -281,10 +342,51 @@ struct TranscriptionSettingsView: View {
     }
 
     @ViewBuilder
+    private var claudeStatus: some View {
+        switch setup.claude {
+        case .unknown: Text("Unknown").foregroundStyle(.secondary)
+        case .checking:
+            HStack {
+                ProgressView().controlSize(.small)
+                Text("Checking…").foregroundStyle(.secondary)
+            }
+        case .ready: Label("Claude: ready", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+        case .notLoggedIn: Text("Claude: not logged in").foregroundStyle(.orange)
+        case .notInstalled: Text("Claude: not installed").foregroundStyle(.orange)
+        case .failed(let message): Text(message).foregroundStyle(.secondary).lineLimit(2)
+        }
+    }
+
+    /// One line on what to do when Claude Code is missing or logged out; EchoPad never logs in itself.
+    @ViewBuilder
+    private var claudeInstructions: some View {
+        switch setup.claude {
+        case .notLoggedIn:
+            HStack {
+                Text("In Terminal, run \(Text(ClaudeCLI.LOGIN_COMMAND).font(.body.monospaced())), then set up again.")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(ClaudeCLI.LOGIN_COMMAND, forType: .string)
+                }
+            }
+        case .notInstalled:
+            HStack {
+                Text("Install Claude Code, log in, then set up again.").foregroundStyle(.secondary)
+                Spacer()
+                Link("Install Page", destination: ClaudeCLI.INSTALL_PAGE)
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
     private var speakerModelStatus: some View {
         switch speakers.model {
         case .unknown: Text("Unknown").foregroundStyle(.secondary)
-        case .notDownloaded: Text("Downloads on first use").foregroundStyle(.secondary)
+        case .notDownloaded: Text("Not downloaded").foregroundStyle(.orange)
         case .downloading(let detail):
             HStack {
                 ProgressView().controlSize(.small)
@@ -295,12 +397,14 @@ struct TranscriptionSettingsView: View {
         }
     }
 
-    private func chooseCommand() {
+    private func chooseVault() {
         let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.message = "Choose the command that transcribes a conversation folder."
-        if panel.runModal() == .OK, let url = panel.url { settings.value.externalCommand = url.path }
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = false
+        panel.message = "Choose your Obsidian vault (the folder that contains .obsidian)."
+        if !settings.value.vaultPath.isEmpty { panel.directoryURL = URL(fileURLWithPath: settings.value.vaultPath) }
+        if panel.runModal() == .OK, let url = panel.url { settings.value.vaultPath = url.path }
     }
 
     @ViewBuilder

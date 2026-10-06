@@ -137,17 +137,50 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(settings.destinations.count, 1)
         XCTAssertTrue(settings.identifySpeakers)
         XCTAssertEqual(settings.transcriber, .builtIn)
-        XCTAssertEqual(settings.externalCommand, "")
+        XCTAssertEqual(settings.vaultPath, "")
+        XCTAssertEqual(settings.logBookFolder, "Log Book")
+        XCTAssertEqual(settings.transcriptsFolder, "_attachments/transcripts")
+        XCTAssertEqual(settings.glossaryPath, "Admin/Meeting Glossary.md")
+        XCTAssertEqual(settings.transcriptRetentionDays, 3)
+        XCTAssertEqual(settings.draftModel, .sonnet)
+        XCTAssertTrue(settings.looksUpCalendar)
     }
 
-    func testExternalTranscriberRoundTrip() throws {
+    func testPipelineSettingsRoundTrip() throws {
         var settings = Settings()
         settings.transcriber = .external
-        settings.externalCommand = "/Users/me/bin/transcribe"
+        settings.vaultPath = "/Users/me/Vault"
+        settings.draftModel = .opus
+        settings.transcriptRetentionDays = 7
+        settings.looksUpCalendar = false
         let data = try JSONEncoder().encode(settings)
         let json = String(decoding: data, as: UTF8.self)
         XCTAssertTrue(json.contains(#""transcriber":"external""#), json)
+        XCTAssertTrue(json.contains(#""draftModel":"opus""#), json)
         XCTAssertEqual(try JSONDecoder().decode(Settings.self, from: data), settings)
+    }
+
+    /// A settings.json from the external-command era keeps its choice; the command is dropped on the next save.
+    func testMigratesExternalCommandSettings() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("echopad-settings-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let old = #"{"transcriber":"external","externalCommand":"/Users/me/Notetaker/pipeline/transcribe.sh","myName":"Aron","language":"en"}"#
+        try Data(old.utf8).write(to: url)
+        let settings = SettingsStore.load(from: url)
+        XCTAssertEqual(settings.transcriber, .external)
+        XCTAssertEqual(settings.myName, "Aron")
+        XCTAssertEqual(settings.language, "en")
+        XCTAssertEqual(settings.vaultPath, "")
+        XCTAssertEqual(settings.glossaryPath, Settings.DEFAULT_GLOSSARY_PATH)
+        try SettingsStore.save(settings, to: url)
+        let saved = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertFalse(saved.contains("externalCommand"), saved)
+        XCTAssertTrue(saved.contains(#""transcriber" : "external""#), saved)
+        XCTAssertEqual(SettingsStore.load(from: url), settings)
+    }
+
+    func testTranscriberTitles() {
+        XCTAssertEqual(Settings.TranscriberChoice.allCases.map(\.title), ["Built-in (Parakeet)", "Notetaker pipeline"])
     }
 
     func testRoundTrip() throws {
@@ -172,6 +205,31 @@ final class ExternalTranscriberTests: XCTestCase {
     func testEnvironmentCarriesNoToken() {
         let environment = ExternalTranscriber.environment()
         XCTAssertEqual(Set(environment.keys).subtracting(["ECHOPAD_DATA_DIR"]), ["HOME", "PATH"])
+    }
+
+    func testFindsTheBundledPipelineFirst() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("echopad-pipeline-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resources = root.appendingPathComponent("Resources")
+        let checkout = root.appendingPathComponent("checkout/pipeline")
+        for folder in [resources.appendingPathComponent("pipeline"), checkout] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let script = folder.appendingPathComponent("transcribe.sh")
+            try Data("#!/bin/sh\n".utf8).write(to: script)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        }
+        let override = ["ECHOPAD_PIPELINE_DIR": checkout.path]
+        XCTAssertEqual(try ExternalTranscriber.command(resources: resources, environment: override).path,
+                       resources.appendingPathComponent("pipeline/transcribe.sh").path)
+        let unbundled = root.appendingPathComponent("NoResources")
+        XCTAssertEqual(try ExternalTranscriber.command(resources: unbundled, environment: override).path,
+                       checkout.appendingPathComponent("transcribe.sh").path)
+        XCTAssertThrowsError(try ExternalTranscriber.command(resources: unbundled, environment: [:])) { error in
+            XCTAssertEqual(error as? ExternalTranscriber.Failure, .pipelineMissing)
+        }
+        XCTAssertThrowsError(try ExternalTranscriber.command(resources: nil, environment: ["ECHOPAD_PIPELINE_DIR": root.path])) { error in
+            XCTAssertEqual(error as? ExternalTranscriber.Failure, .notExecutable(root.appendingPathComponent("transcribe.sh").path))
+        }
     }
 
     func testStageTitle() {

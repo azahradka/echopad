@@ -4,7 +4,7 @@ import ScribeKit
 import SystemAudioKit
 
 /// Runs a recording from start to saved files: capture with SystemAudioKit, transcribe
-/// with ScribeKit (or the external command chosen in Settings), then export to the chosen destination and run its after-save actions.
+/// with ScribeKit (or the bundled Notetaker pipeline), then export to the chosen destination and run its after-save actions.
 @MainActor
 public final class RecordingController {
     /// Seconds of silent system audio during a detected call before the UI warns about it.
@@ -186,9 +186,9 @@ public final class RecordingController {
         library.enforceAudioLimit(settings.libraryLimit)
     }
 
-    /// Finds speakers in the app (writing turns.json), then runs the external command on the
+    /// Finds speakers in the app (writing turns.json), then runs the Notetaker pipeline on the
     /// conversation's folder; it writes transcript.json, which is then exported exactly like a
-    /// ScribeKit transcript. The command may delete the tracks.
+    /// ScribeKit transcript. The pipeline may delete the tracks.
     private func processExternally(_ id: UUID) async {
         let appState = self.appState
         let folder = library.folder(for: id)
@@ -198,10 +198,13 @@ public final class RecordingController {
             appState.transition(to: .processing(.external(stage)))
         }
         do {
-            // Checked first so a missing command fails before minutes of diarization.
-            _ = try ExternalTranscriber.executable(settings.externalCommand)
+            // Checked first so a missing vault or pipeline fails before minutes of diarization.
+            try PipelineConfig.validate(settings).prepareRun()
+            _ = try ExternalTranscriber.command()
+            try await speakers.prepareModel(onStatus: show)
             try await speakers.writeTurns(folder: folder, onStatus: show)
-            try await external.transcribe(folder: folder, command: settings.externalCommand, onStage: show)
+            // Runs --check first (and --setup when something is missing).
+            try await external.transcribe(folder: folder, onStage: show)
             library.reload(id)
             guard let conversation = library.conversation(id: id), let transcript = library.transcript(for: id) else {
                 throw ExternalTranscriber.Failure.noTranscript
