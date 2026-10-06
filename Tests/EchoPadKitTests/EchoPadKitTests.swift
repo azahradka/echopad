@@ -204,7 +204,8 @@ final class ExternalTranscriberTests: XCTestCase {
 
     func testEnvironmentCarriesNoToken() {
         let environment = ExternalTranscriber.environment()
-        XCTAssertEqual(Set(environment.keys).subtracting(["ECHOPAD_DATA_DIR"]), ["HOME", "PATH"])
+        XCTAssertEqual(Set(environment.keys).subtracting(["ECHOPAD_DATA_DIR"]), ["HOME", "PATH", "USER", "LOGNAME"])
+        XCTAssertFalse(environment["USER"]?.isEmpty ?? true)
     }
 
     func testFindsTheBundledPipelineFirst() throws {
