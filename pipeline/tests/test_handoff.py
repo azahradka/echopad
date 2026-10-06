@@ -1,14 +1,14 @@
 """claude_handoff against a stub `claude` that prints stream-json and sets the transcript status
 the way the /meeting-note skill would; never the real CLI."""
 import json
+import shlex
 import sys
 
 import pytest
 
 import process
 
-STUB = """#!{python}
-import json, sys, time
+STUB = """import json, sys, time
 from pathlib import Path
 state = Path({state!r})
 n = int(state.read_text()) + 1 if state.exists() else 1
@@ -36,8 +36,10 @@ def stub(tmp_path, monkeypatch):
     monkeypatch.setattr(process.time, "sleep", lambda s: None)
 
     def make(mode):
-        path = tmp_path / "claude"
-        path.write_text(STUB.format(python=sys.executable, state=str(tmp_path / "n"), argv=str(tmp_path / "argv"), mode=mode))
+        script = tmp_path / "claude.py"
+        script.write_text(STUB.format(state=str(tmp_path / "n"), argv=str(tmp_path / "argv"), mode=mode))
+        path = tmp_path / "claude"  # a shell wrapper: a #! line cannot hold a python path with spaces
+        path.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(script))} "$@"\n')
         path.chmod(0o755)
         return str(path)
     return make
@@ -90,3 +92,12 @@ def test_pending_connector_retries_once(stub, tmp_path, transcript):
 def test_not_logged_in_fails(stub, transcript):
     with pytest.raises(RuntimeError, match="Not logged in"):
         process.claude_handoff(transcript, "sonnet", VAULT, claude=stub("logged_out"))
+
+
+def test_calendar_off_drops_the_tool_and_the_connector_wait(stub, tmp_path, transcript):
+    result = process.claude_handoff(transcript, "sonnet", VAULT, calendar=False, claude=stub("pending_once"))
+    assert result["result"] == "done"
+    assert (tmp_path / "n").read_text() == "1"  # a pending M365 connector does not matter without the calendar
+    argv = json.loads((tmp_path / "argv").read_text())
+    assert process.CALENDAR_TOOL not in argv
+    assert argv[argv.index("--allowedTools") + 1:][:2] == ["mcp__notes-search__search_notes", "mcp__notes-search__get_note"]

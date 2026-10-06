@@ -1,14 +1,11 @@
 [project]
 name = "notetaker-pipeline"
 version = "0.1.0"
-description = "Notetaker post-processing pipeline: EchoPad recording folder -> transcript Markdown (Qwen3-ASR via mlx-audio, pyannote community-1)"
+description = "Notetaker pipeline: EchoPad recording folder + the app's speaker turns -> transcript Markdown (Qwen3-ASR via mlx-audio)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "mlx-audio[stt]>=0.5.8",
-    "pyannote-audio>=4,<5",
-    "torch>=2.14.1",
-    "torchaudio>=2.11.0",
 ]
 
 [dependency-groups]
@@ -19,4 +16,5 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+addopts = "-p no:cacheprovider"  # nothing written next to the sources
 filterwarnings = ["ignore::scipy.io.wavfile.WavFileWarning"]

@@ -1,11 +1,17 @@
 import json
+import os
 from pathlib import Path
 
-import numpy as np
-import pytest
-from scipy.io import wavfile
+# The same data dir and model cache transcribe.sh uses, before anything imports huggingface_hub.
+BASE = Path(os.environ.get("ECHOPAD_DATA_DIR") or Path.home() / "Library/Application Support/EchoPad")
+os.environ.setdefault("HF_HOME", str(BASE / "models"))
+os.environ["HF_HUB_OFFLINE"] = "1"
 
-from gen_test_audio import tts
+import numpy as np  # noqa: E402
+import pytest  # noqa: E402
+from scipy.io import wavfile  # noqa: E402
+
+from gen_test_audio import tts  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SR = 16000
@@ -34,7 +40,8 @@ def write_wav(path: Path, audio: np.ndarray) -> None:
 
 @pytest.fixture(scope="session")
 def call_recording(tmp_path_factory) -> dict:
-    """An EchoPad-like conversation folder for a call, and the ground-truth system turns."""
+    """An EchoPad-like conversation folder for a call, with the turns.json the app would write
+    (the ground-truth system turns)."""
     clips = [(ch, tts(text, voice)) for ch, voice, text in CALL]
     t, placed = 1.0, []
     for i, (ch, a) in enumerate(clips):
@@ -49,7 +56,7 @@ def call_recording(tmp_path_factory) -> dict:
         i = int(start * SR)
         tracks[ch][i:i + len(a)] += a
         if ch == "system":
-            label = voices.setdefault(voice, f"SPEAKER_{len(voices):02d}")
+            label = voices.setdefault(voice, f"S{len(voices) + 1}")
             turns.append({"start": round(start, 2), "end": round(start + len(a) / SR, 2), "speaker": label})
 
     folder = tmp_path_factory.mktemp("echopad") / "6F1C2A4E-0000-4000-8000-000000000001"
@@ -62,22 +69,30 @@ def call_recording(tmp_path_factory) -> dict:
         "exportedFiles": [], "id": folder.name, "speakers": [], "status": {"done": {}},
         "title": "Microsoft Teams call", "wordCount": 0,
     }, indent=2))
-    turns_file = folder.parent / "system.turns.json"
-    turns_file.write_text(json.dumps(turns))
-    return {"folder": folder, "turns": turns_file, "seconds": total / SR}
+    write_turns(folder, "call", turns)
+    return {"folder": folder, "turns": turns, "seconds": total / SR}
 
 
-@pytest.fixture
-def config(tmp_path) -> Path:
+def write_turns(folder: Path, mode: str, turns: list[dict]) -> None:
+    """<folder>/turns.json as the app writes it."""
+    track = {"call": "system.wav", "in-person": "microphone.wav"}[mode]
+    (folder / "turns.json").write_text(json.dumps(
+        {"mode": mode, "track": track, "diarizer": "fluidaudio-community-1", "turns": turns}, indent=2))
+
+
+def write_config(path: Path, vault: Path, extra: str = "") -> Path:
     """config.toml pointing at a throwaway vault."""
-    vault = tmp_path / "vault"
-    (vault / "_attachments").mkdir(parents=True)
-    path = tmp_path / "config.toml"
+    (vault / "_attachments").mkdir(parents=True, exist_ok=True)
     path.write_text(
         f'vault = "{vault}"\n'
         f'glossary_path = "{FIXTURES / "glossary.md"}"\n'
         f'log_book_dir = "{vault / "Log Book"}"\n'
         'your_name = "Aron"\n'
-        'claude_model = "sonnet"\n'
+        'claude_model = "sonnet"\n' + extra
     )
     return path
+
+
+@pytest.fixture
+def config(tmp_path) -> Path:
+    return write_config(tmp_path / "config.toml", tmp_path / "vault")

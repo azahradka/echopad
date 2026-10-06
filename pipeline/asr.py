@@ -7,7 +7,7 @@ Rules from the Phase 0 spike (../spike-qwen3.md):
 - ASR per diarized turn: adjacent same-speaker turns merged up to 30 s, longer turns split.
   chunk() runs on the turns of both tracks together, so a mic turn and the next mic turn
   are not merged across a remote turn between them (that would put text out of order).
-- Only speech turns go in (turns from diarization or the energy gate, at least 0.5 s).
+- Only speech turns go in (the app's diarization turns or the energy gate, at least 0.5 s).
 - max_tokens is capped by turn length.
 - On non-speech the model prints the context back verbatim, so output that shares
   LEAK_WORDS consecutive words with the context is dropped.
@@ -20,9 +20,10 @@ import re
 import sys
 from pathlib import Path
 
-os.environ.setdefault("HF_HOME", str(Path(__file__).parent / ".hf-cache"))
+# The model cache is HF_HOME (<data dir>/models), set by transcribe.sh; runs are offline.
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
 from mlx_audio.stt import load  # noqa: E402
 

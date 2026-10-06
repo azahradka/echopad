@@ -3,10 +3,8 @@ import json
 import shutil
 from datetime import datetime, timedelta
 
-import numpy as np
-
 import process
-from conftest import FIXTURES, START_UTC, write_wav
+from conftest import FIXTURES, START_UTC, write_config, write_turns
 
 
 def expected_name():
@@ -15,7 +13,7 @@ def expected_name():
 
 def test_call(call_recording, config, capfd):
     folder = call_recording["folder"]
-    rc = process.main([str(folder), "--dry-run", "--no-claude", "--turns", str(call_recording["turns"]), "--config", str(config)])
+    rc = process.main([str(folder), "--dry-run", "--no-claude", "--config", str(config)])
     assert rc == 0
 
     # stdout is only stage lines, in order, one per ASR chunk (EchoPad reads these)
@@ -23,8 +21,7 @@ def test_call(call_recording, config, capfd):
     assert all(line.startswith("stage: ") for line in lines), lines
     stages = [line.removeprefix("stage: ") for line in lines]
     n = sum(s.startswith("transcribing ") for s in stages)
-    assert n > 0 and stages == ["detecting mode", "diarizing", *[f"transcribing {i}/{n}" for i in range(1, n + 1)],
-                                "writing transcript", "done"]
+    assert n > 0 and stages == [*[f"transcribing {i}/{n}" for i in range(1, n + 1)], "writing transcript", "done"]
 
     # transcript.json written back into the folder in EchoPad's (ScribeKit) schema
     tj = json.loads((folder / "transcript.json").read_text())
@@ -36,7 +33,7 @@ def test_call(call_recording, config, capfd):
     segs = tj["segments"]
     assert all(set(s) == {"speakerID", "start", "end", "text", "words"} and s["words"] == [] and s["text"] for s in segs)
     assert [s["start"] for s in segs] == sorted(s["start"] for s in segs)
-    truth = json.loads(call_recording["turns"].read_text())
+    truth = call_recording["turns"]
     assert segs[0]["speakerID"] == "remote-s1" and segs[0]["start"] == truth[0]["start"]
     assert {s["speakerID"] for s in segs} == {"local", "remote-s1", "remote-s2"}
     assert all(0 <= s["start"] < s["end"] <= tj["duration"] for s in segs)
@@ -48,7 +45,7 @@ def test_call(call_recording, config, capfd):
     assert datetime.fromisoformat(fm["start"]) == start
     assert datetime.fromisoformat(fm["retain_until"]) == start + timedelta(days=3)
     assert fm["asr_model"].startswith("mlx-community/Qwen3-ASR-1.7B-bf16@")
-    assert fm["diarization_model"] == "turns override (system.turns.json)"
+    assert fm["diarization_model"] == "fluidaudio-community-1" and "calendar" not in fm
     assert fm["source_folder"] == str(folder) and fm["title"] == "Microsoft Teams call"
     assert fm["glossary"] == str(FIXTURES / "glossary.md")
     body = text.split("## Transcript", 1)[1]
@@ -59,15 +56,17 @@ def test_call(call_recording, config, capfd):
     print(text)
 
 
-def test_in_person_when_system_is_silent(call_recording, config, tmp_path):
+def test_in_person_with_config_keys(call_recording, tmp_path):
+    """Mode comes from turns.json (system.wav is ignored); retention_days and calendar = false reach the frontmatter."""
     folder = tmp_path / "in-person"
     shutil.copytree(call_recording["folder"], folder)
-    write_wav(folder / "system.wav", np.zeros(16000 * 5, np.float32))
-    turns = tmp_path / "mic.turns.json"
-    turns.write_text(json.dumps([{"start": 0.0, "end": call_recording["seconds"], "speaker": "SPEAKER_00"}]))
-    assert process.main([str(folder), "--dry-run", "--turns", str(turns), "--config", str(config)]) == 0
-    text = (config.parent / "vault" / "_attachments" / "transcripts" / expected_name()).read_text()
-    assert process.frontmatter(text)["mode"] == "in-person"
+    write_turns(folder, "in-person", [{"start": 0.0, "end": call_recording["seconds"], "speaker": "S1"}])
+    config = write_config(tmp_path / "config.toml", tmp_path / "vault", "retention_days = 5\ncalendar = false\n")
+    assert process.main([str(folder), "--dry-run", "--config", str(config)]) == 0
+    text = (tmp_path / "vault" / "_attachments" / "transcripts" / expected_name()).read_text()
+    fm = process.frontmatter(text)
+    assert fm["mode"] == "in-person" and fm["calendar"] == "off"
+    assert datetime.fromisoformat(fm["retain_until"]) - datetime.fromisoformat(fm["start"]) == timedelta(days=5)
     assert "**S1:**" in text and "Remote" not in text and "**Aron:**" not in text
 
 

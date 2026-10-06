@@ -1,23 +1,23 @@
 """EchoPad conversation folder -> transcript Markdown in the vault, then the Claude hand-off.
 
-    uv run process.py <folder> [--dry-run] [--no-claude] [--turns turns.json] [--config config.toml]
-    uv run process.py --check | --setup
+    process.py <folder> --config config.toml [--dry-run] [--no-claude]
+    process.py --setup
 
 <folder> is what EchoPad writes per recording: microphone.wav, system.wav (absent when
-system audio was off), transcript.json, conversation.json. transcribe.sh calls this (EchoPad's
-external transcription command, and on_save.sh for the post-save hook).
+system audio was off), transcript.json, conversation.json, and turns.json (the app's
+diarization: mode, track and speaker turns; README "turns.json").
 
-stdout carries only `stage: <text>` progress lines (and `needs: ...` / `models: ...`, below) for
-EchoPad; everything else goes to stderr. <folder>/transcript.json is overwritten with our transcript
-in EchoPad's schema before the hand-off.
+Run it through transcribe.sh (EchoPad's external transcriber), which sets up the environment:
+the per-user venv, HF_HOME for the model cache, offline mode, and --config. transcribe.sh also
+checks the setup (env and Qwen3) before a run and does `--check` itself.
+
+stdout carries only `stage: <text>` progress lines for EchoPad; everything else goes to stderr.
+<folder>/transcript.json is overwritten with our transcript in EchoPad's schema before the hand-off.
 
 --dry-run   write the transcript only: no retention cleanup, no hand-off, WAVs kept, no notification
---no-claude skip the `claude -p "/meeting-note ..."` hand-off (../.claude/skills/meeting-note)
---turns     use this [{"start", "end", "speaker"}] list instead of pyannote for the diarized track
---check     print `models: ok` or `models: missing qwen3|pyannote|both`; no network, exit 0
---setup     download missing models (HF_TOKEN from the environment for pyannote); exit 0, or
-            3 `needs: hf_token`, 4 `needs: gate <url>`, 5 other failure (see models.py)
-A run that finds models missing prints `needs: models` and exits 6 before any audio work.
+--no-claude skip the `claude -p "/meeting-note ..."` hand-off (.claude/skills/meeting-note)
+--setup     download Qwen3-ASR into HF_HOME (online); exit 0, or 5 on failure (see models.py)
+A missing or malformed turns.json is a recording failure (error.txt, exit 1).
 """
 
 import argparse
@@ -33,24 +33,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
-ROOT = Path(__file__).parent
-# One model cache for runs, --check and --setup, fixed before anything imports huggingface_hub
-# (which reads these once). Runs are offline; --setup is the only thing that downloads.
-os.environ["HF_HOME"] = str(ROOT / ".hf-cache")
-if "--setup" in sys.argv[1:]:
-    os.environ["HF_HUB_OFFLINE"] = "0"
-else:
-    os.environ.setdefault("HF_HUB_OFFLINE", "1")
-
-import diarize  # first: sets the pyannote env vars before anything imports it
 import asr
 import glossary
 import models
+from diarize import clean, speech_regions
 from merge import echopad_transcript, label_speakers, render
 
-RETAIN = timedelta(days=3)
-MIN_SPEECH_S = 1.0  # system.wav with less gated speech than this means in-person mode
-IN_PERSON_SPEAKERS = (2, 4)
+TRACKS = {"call": "system.wav", "in-person": "microphone.wav"}  # turns.json mode -> the track its turns refer to
 TERMINAL_NOTIFIER = "/opt/homebrew/bin/terminal-notifier"
 CALENDAR_TOOL = "mcp__claude_ai_Microsoft_365__outlook_calendar_search"
 NOTES_TOOLS = ["mcp__notes-search__search_notes", "mcp__notes-search__get_note"]  # local read-only MCP server
@@ -59,15 +48,22 @@ CONNECTOR = "claude.ai Microsoft 365"
 
 
 def stage(text: str) -> None:
-    """Progress line for EchoPad; the only output on stdout besides needs:/models:."""
+    """Progress line for EchoPad; the only output on stdout."""
     print(f"stage: {text}", flush=True)
 
 
-def load_config(path: str | Path | None = None) -> dict:
-    cfg = tomllib.loads(Path(path or ROOT / "config.toml").read_text())
+def load_config(path: str | Path) -> dict:
+    """config.toml (written by the app; keys in config.example.toml) with its defaults filled in."""
+    cfg = tomllib.loads(Path(path).read_text())
     cfg.setdefault("transcripts_dir", str(Path(cfg["vault"]) / "_attachments" / "transcripts"))
+    cfg.setdefault("retention_days", 3)
+    cfg.setdefault("calendar", True)
     for key in ("vault", "transcripts_dir", "glossary_path", "log_book_dir"):
         cfg[key] = os.path.expanduser(cfg[key])
+    if type(cfg["retention_days"]) is not int or cfg["retention_days"] < 0:
+        raise ValueError(f"{path}: retention_days must be a whole number of days, got {cfg['retention_days']!r}")
+    if type(cfg["calendar"]) is not bool:
+        raise ValueError(f"{path}: calendar must be true or false, got {cfg['calendar']!r}")
     return cfg
 
 
@@ -95,15 +91,40 @@ def cleanup_transcripts(transcripts_dir: Path, now: datetime) -> None:
             print(f"retention: deleted {path.name}", file=sys.stderr)
 
 
-def has_speech(wav: Path) -> bool:
-    return sum(e - s for s, e in diarize.speech_regions(wav)) >= MIN_SPEECH_S
+def read_turns(folder: Path) -> dict:
+    """<folder>/turns.json, written by the app before it runs us (README "turns.json"):
+    {"mode": "call" | "in-person", "track": "system.wav" | "microphone.wav", "diarizer": str,
+     "turns": [{"start", "end", "speaker"}, ...]}. Raises ValueError with the reason if it is not that."""
+    path = folder / "turns.json"
+    if not path.is_file():
+        raise ValueError(f"turns.json missing in {folder}: the app writes it before running the pipeline")
+    try:
+        spec = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        raise ValueError(f"turns.json is not valid JSON: {e}") from None
+
+    if not isinstance(spec, dict) or spec.get("mode") not in TRACKS:
+        raise ValueError(f"turns.json: mode must be one of {list(TRACKS)}")
+    if spec.get("track") != TRACKS[spec["mode"]]:
+        raise ValueError(f"turns.json: track must be {TRACKS[spec['mode']]} in {spec['mode']} mode, got {spec.get('track')!r}")
+    if not isinstance(spec.get("diarizer"), str) or not spec["diarizer"]:
+        raise ValueError("turns.json: diarizer must be a non-empty string")
+    if not isinstance(spec.get("turns"), list):
+        raise ValueError("turns.json: turns must be a list")
+    for i, turn in enumerate(spec["turns"]):
+        if not (isinstance(turn, dict) and isinstance(turn.get("speaker"), str) and turn["speaker"]
+                and all(type(turn.get(k)) in (int, float) for k in ("start", "end")) and 0 <= turn["start"] < turn["end"]):
+            raise ValueError(f"turns.json: turn {i} must be {{start, end, speaker}} with 0 <= start < end, got {turn!r}")
+    return spec
 
 
-def transcribe_folder(folder: Path, cfg: dict, turns_override: list[dict] | None) -> tuple[str, list[dict]]:
-    """(mode, turns with text) for both tracks."""
+def transcribe_folder(folder: Path, cfg: dict, spec: dict) -> list[dict]:
+    """Turns with text for both tracks; spec is read_turns(). Call mode: the app's turns are the remote
+    speakers on system.wav, the mic's speech regions are you. In person: the app's turns on the mic track."""
     rows = glossary.load(cfg["glossary_path"])
     context, table = glossary.context(rows), glossary.replacements(rows)
-    mic, system = folder / "microphone.wav", folder / "system.wav"
+    track, mic = folder / spec["track"], folder / "microphone.wav"
+    turns = clean(spec["turns"])
     done = 0
 
     def progress(n: int):
@@ -113,22 +134,17 @@ def transcribe_folder(folder: Path, cfg: dict, turns_override: list[dict] | None
             stage(f"transcribing {done}/{n}")
         return tick
 
-    stage("detecting mode")
-    if system.exists() and has_speech(system):
-        stage("diarizing")
-        remote = label_speakers(turns_override if turns_override is not None else diarize.diarize(system),
-                                "Remote S", "system")
+    if spec["mode"] == "call":
+        remote = label_speakers(turns, "Remote S", "system")
         mine = [{"start": s, "end": e, "speaker": cfg["your_name"], "channel": "mic"}
-                for s, e in diarize.speech_regions(mic)]
+                for s, e in (speech_regions(mic) if mic.exists() else [])]  # no mic track when mic recording is off
         chunks = asr.chunk(remote + mine)
         tick = progress(len(chunks))
-        return "call", (asr.transcribe(system, [c for c in chunks if c["channel"] == "system"], context, table, tick)
-                        + asr.transcribe(mic, [c for c in chunks if c["channel"] == "mic"], context, table, tick))
-
-    stage("diarizing")
-    local = turns_override if turns_override is not None else diarize.diarize(mic, IN_PERSON_SPEAKERS)
-    chunks = asr.chunk(label_speakers(local, "S", "mic"))
-    return "in-person", asr.transcribe(mic, chunks, context, table, progress(len(chunks)))
+        mic_chunks = [c for c in chunks if c["channel"] == "mic"]
+        return (asr.transcribe(track, [c for c in chunks if c["channel"] == "system"], context, table, tick)
+                + (asr.transcribe(mic, mic_chunks, context, table, tick) if mic_chunks else []))
+    chunks = asr.chunk(label_speakers(turns, "S", "mic"))
+    return asr.transcribe(track, chunks, context, table, progress(len(chunks)))
 
 
 def write_atomic(path: Path, text: str) -> None:
@@ -137,27 +153,30 @@ def write_atomic(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def write_transcript(folder: Path, cfg: dict, turns_override: list[dict] | None, diarization_model: str) -> Path:
+def write_transcript(folder: Path, cfg: dict) -> Path:
     """<folder>/transcript.json for EchoPad (replacing its own), then the vault transcript Markdown."""
     conv = json.loads((folder / "conversation.json").read_text())
     start = datetime.fromisoformat(conv["date"]).astimezone()
-    mode, turns = transcribe_folder(folder, cfg, turns_override)
+    spec = read_turns(folder)
+    turns = transcribe_folder(folder, cfg, spec)
     stage("writing transcript")
     write_atomic(folder / "transcript.json",
                  json.dumps(echopad_transcript(turns, cfg["your_name"], conv["duration"]), indent=2, ensure_ascii=False))
     fm = {
         "status": "raw",
-        "retain_until": (start + RETAIN).isoformat(timespec="seconds"),
-        "mode": mode,
+        "retain_until": (start + timedelta(days=cfg["retention_days"])).isoformat(timespec="seconds"),
+        "mode": spec["mode"],
         "start": start.isoformat(timespec="seconds"),
         "title": json.dumps(conv["title"], ensure_ascii=False),
         "app": json.dumps(conv.get("app"), ensure_ascii=False),
         "duration_s": round(conv["duration"]),
         "asr_model": f"{asr.MODEL_ID}@{asr.MODEL_REV[:7]}",
-        "diarization_model": diarization_model,
+        "diarization_model": spec["diarizer"],
         "source_folder": json.dumps(str(folder), ensure_ascii=False),
         "glossary": json.dumps(cfg["glossary_path"], ensure_ascii=False),
     }
+    if not cfg["calendar"]:
+        fm["calendar"] = "off"  # the skill then skips its calendar lookup
     text = ("---\n" + "".join(f"{k}: {v}\n" for k, v in fm.items()) + "---\n\n## Transcript\n\n" + render(turns))
     path = Path(cfg["transcripts_dir"]) / f"{start:%Y-%m-%d %H%M}.transcript.md"
     write_atomic(path, text)
@@ -187,23 +206,25 @@ def run_claude(cmd: list[str], stop_if_pending: bool) -> tuple[dict | None, bool
     return result, False
 
 
-def allowed_tools(vault: str) -> list[str]:
+def allowed_tools(vault: str, calendar: bool = True) -> list[str]:
     """dontAsk allowlist. `//` makes a rule path absolute (a single `/` is relative to the project);
     Edit rules also cover Write. Each rule is one argv item, so spaces in paths are fine."""
     v = "//" + str(vault).strip("/")
-    return [CALENDAR_TOOL, *NOTES_TOOLS, f"Read({v}/**)", f"Edit({v}/Log Book/**)", f"Edit({v}/_attachments/transcripts/**)"]
+    return [*([CALENDAR_TOOL] if calendar else []), *NOTES_TOOLS,
+            f"Read({v}/**)", f"Edit({v}/Log Book/**)", f"Edit({v}/_attachments/transcripts/**)"]
 
 
-def claude_handoff(transcript: Path, model: str, vault: str, claude: str = "claude") -> dict:
+def claude_handoff(transcript: Path, model: str, vault: str, calendar: bool = True, claude: str = "claude") -> dict:
     """claude -p "/meeting-note <transcript>" headless (spike-headless-calendar.md, README "Hand-off").
-    Retries once if the M365 connector is still `pending` at init. A `Not logged in` exit raises.
+    With the calendar on, retries once if the M365 connector is still `pending` at init.
+    A `Not logged in` exit raises.
     The skill must leave the transcript at `status: processed` (or `delete` for `retain: none`,
     which is deleted here); anything else is a failure."""
     cmd = [claude, "-p", f"/meeting-note {transcript}",  # the prompt must directly follow -p
            "--model", model, "--output-format", "stream-json", "--verbose", "--max-turns", str(MAX_TURNS),
            "--permission-mode", "dontAsk", "--tools", "Read,Edit,Write",  # no Bash: dontAsk still runs read-only commands
-           "--allowedTools", *allowed_tools(vault)]
-    result, pending = run_claude(cmd, stop_if_pending=True)
+           "--allowedTools", *allowed_tools(vault, calendar)]
+    result, pending = run_claude(cmd, stop_if_pending=calendar)
     if pending:
         print("claude: M365 connector pending, retrying once", file=sys.stderr)
         time.sleep(5)
@@ -233,23 +254,16 @@ def notify(title: str, message: str, open_path: Path | None = None) -> None:
 def process(folder: Path, cfg: dict, args: argparse.Namespace) -> int:
     error = folder / "error.txt"
     error.unlink(missing_ok=True)  # a rerun (EchoPad "Transcribe again" or by hand) is always intentional
-    need = models.missing(need_pyannote=not args.turns)
-    if need:  # before any audio work, so EchoPad can run --setup instead (not a recording failure: no error.txt)
-        print("needs: models", flush=True)
-        print(f"{models.describe(need)} in {models.constants.HF_HUB_CACHE}; run transcribe.sh --setup", file=sys.stderr)
-        return 6
     if not args.dry_run:
         cleanup_transcripts(Path(cfg["transcripts_dir"]), datetime.now().astimezone())
 
-    turns = json.loads(Path(args.turns).read_text()) if args.turns else None
-    diarization_model = f"turns override ({Path(args.turns).name})" if args.turns else f"{diarize.MODEL_ID}@{diarize.MODEL_REV[:7]}"
     try:
-        path = write_transcript(folder, cfg, turns, diarization_model)
+        path = write_transcript(folder, cfg)
         print(f"wrote {path}", file=sys.stderr)
         note = None
         if not (args.dry_run or args.no_claude):
             stage("drafting note")
-            reply = claude_handoff(path, cfg["claude_model"], cfg["vault"]).get("result") or ""
+            reply = claude_handoff(path, cfg["claude_model"], cfg["vault"], cfg["calendar"]).get("result") or ""
             note = Path(reply.strip().splitlines()[-1].strip("` ")) if reply.strip() else None  # the skill replies with the note path
     except Exception as e:
         if args.dry_run:
@@ -280,18 +294,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("folder", nargs="?")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-claude", action="store_true")
-    ap.add_argument("--turns")
     ap.add_argument("--config")
-    ap.add_argument("--check", action="store_true")
     ap.add_argument("--setup", action="store_true")
     args = ap.parse_args(argv)
-    if args.check:
-        print(models.describe(models.missing()), flush=True)
-        return 0
     if args.setup:
-        return models.setup(os.environ.get("HF_TOKEN"))  # the token comes only from the environment
-    if not args.folder:
-        ap.error("folder is required (or --check / --setup)")
+        return models.setup()
+    if not (args.folder and args.config):
+        ap.error("<folder> and --config are required (or --setup)")
     cfg = load_config(args.config)
     transcripts_dir = Path(cfg["transcripts_dir"])
     transcripts_dir.mkdir(exist_ok=True)

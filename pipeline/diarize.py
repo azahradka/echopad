@@ -1,40 +1,27 @@
-"""Who spoke when: pyannote community-1 on MPS, and an energy gate for the mic track.
+"""Who spoke when, after the app's diarizer: an energy gate for the mic track, and clean-up of the app's turns.
 
-    diarize(wav, num_speakers_hint=(2, 4)) -> [{"start", "end", "speaker"}]   # speaker = pyannote label
-    speech_regions(wav) -> [(start, end)]                                     # no model
+    speech_regions(wav) -> [(start, end)]   # no model
+    clean(turns) -> turns                   # folds stray short labels into their neighbours
 
-pyannote is imported lazily (torch is slow to import, and --turns runs never need it).
-Its telemetry is switched off before import. Audio is passed in memory because
-pyannote's file decoder needs FFmpeg, which is not installed. The model revision is
-pinned and loaded from the project cache (.hf-cache) offline; no token is needed once cached.
+Diarization itself happens in the app (FluidAudio's community-1 port), which writes
+<folder>/turns.json before running the pipeline (README "turns.json").
 """
 
-import functools
-import os
 import warnings
 from pathlib import Path
 
-os.environ.setdefault("HF_HOME", str(Path(__file__).parent / ".hf-cache"))
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
-os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-os.environ["PYANNOTE_METRICS_ENABLED"] = "0"
-
-import numpy as np  # noqa: E402
-from scipy.io import wavfile  # noqa: E402
+import numpy as np
+from scipy.io import wavfile
 
 warnings.filterwarnings("ignore", category=wavfile.WavFileWarning)  # Apple FLLR padding chunk
-warnings.filterwarnings("ignore", message=r"std\(\): degrees of freedom")  # pyannote stats pooling on short windows, harmless
 
 SR = 16000
-MODEL_ID = "pyannote/speaker-diarization-community-1"
-MODEL_REV = "3533c8cf8e369892e6b79ff1bf80f7b0286a54ee"
 
 FRAME_S = 0.03
 GATE_DBFS = -45.0      # frame RMS above this counts as speech
 MERGE_GAP_S = 0.5      # speech regions closer than this are joined
 
-MIN_SPEAKER_S = 1.0    # a pyannote speaker with less exclusive speech than this is a stray cluster
+MIN_SPEAKER_S = 1.0    # a speaker with less speech than this in total is a stray cluster
 MIN_SEGMENT_S = 0.25   # shorter segments that touch a neighbour are folded into it
 TOUCH_S = 0.05         # segments this close count as adjacent
 
@@ -65,33 +52,12 @@ def speech_regions(wav_path: str | Path) -> list[tuple[float, float]]:
     return [(round(float(s), 2), round(float(e), 2)) for s, e in regions]
 
 
-def device_name() -> str:
-    import torch
-    return "mps" if torch.backends.mps.is_available() else "cpu"
-
-
-@functools.cache
-def pipeline(device: str | None = None):
-    """community-1 at MODEL_REV on `device` (default MPS when available). Loaded once per process."""
-    import torch
-    from pyannote.audio import Pipeline
-
-    try:
-        pipe = Pipeline.from_pretrained(MODEL_ID, revision=MODEL_REV)
-    except Exception as e:  # offline and not cached: LocalEntryNotFoundError
-        pipe, err = None, f": {e}"
-    else:
-        err = ""
-    if pipe is None:
-        raise RuntimeError(f"could not load {MODEL_ID}@{MODEL_REV[:7]}; download it once with an HF token (see README){err}")
-    return pipe.to(torch.device(device or device_name()))
-
-
 def clean(segments: list[dict]) -> list[dict]:
     """Fold slivers and stray clusters into the turn they touch; join touching same-speaker segments.
 
-    community-1 sometimes gives the last few hundred ms of a turn, or a 10-50 ms sliver at a
-    speaker change, to another label (a third, stray one when no speaker count is given).
+    community-1 (pyannote's, and FluidAudio's port of it) sometimes gives the last few hundred ms
+    of a turn, or a 10-50 ms sliver at a speaker change, to another label (a third, stray one when
+    no speaker count is given).
     A segment is folded when its label has under MIN_SPEAKER_S of speech in total, or when it
     is shorter than MIN_SEGMENT_S and touches a neighbour: it extends the previous adjacent
     segment, else the next one. Stray-label segments that touch nothing are dropped.
@@ -123,14 +89,3 @@ def clean(segments: list[dict]) -> list[dict]:
             out.append(s)
     return [{**s, "start": round(s["start"], 2), "end": round(s["end"], 2)} for s in out]
 
-
-def diarize(wav_path: str | Path, num_speakers_hint: tuple[int, int] | None = None,
-            device: str | None = None) -> list[dict]:
-    """Exclusive (one speaker at a time) diarization. num_speakers_hint = (min, max)."""
-    import torch
-
-    audio = torch.from_numpy(read_wav(wav_path))[None]
-    hint = {} if num_speakers_hint is None else {"min_speakers": num_speakers_hint[0], "max_speakers": num_speakers_hint[1]}
-    out = pipeline(device)({"waveform": audio, "sample_rate": SR}, **hint)
-    return clean([{"start": seg.start, "end": seg.end, "speaker": spk}
-                  for seg, _, spk in out.exclusive_speaker_diarization.itertracks(yield_label=True)])
