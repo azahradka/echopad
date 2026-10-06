@@ -17,6 +17,7 @@ Runs headless; nobody answers questions. Tools: Read, Write/Edit (only under `Lo
 - Read the glossary at `glossary` from the frontmatter, else `<vault>/Admin/Meeting Glossary.md`. Table: `term | aliases (misheard as) | asr | notes`. If it is missing, continue without corrections and add `> [!warning] Glossary not found; no jargon corrections made.` under `## Notes`.
 
 ## 2. Calendar (one call)
+- If the frontmatter has `calendar: off`, skip this step (no call, no warning): take the title from `title` unless it is generic, else infer it from the content.
 - Call `mcp__claude_ai_Microsoft_365__outlook_calendar_search` once: `query: "*"`, `afterDateTime` = start − 1 h, `beforeDateTime` = start + 1 h, both local time with offset, `limit: 25`.
 - Pick the event whose time span contains `start` (or the closest one starting within 10 min after it). Subject → title. Attendees → speaker-name candidates. Always add "Aron" too: as the organiser he may be missing from the list.
 - If the tool errors, is unavailable, or nothing overlaps: use the transcript `title` unless it is generic (e.g. "Microsoft Teams call"), else infer a short title from the content. Add `> [!warning] No calendar match; title and attendees inferred.` under `## Notes`.

@@ -2,74 +2,108 @@
 
 Turns an EchoPad recording folder into a transcript note in the vault
 (`<transcripts_dir>/<YYYY-MM-DD HHMM>.transcript.md`) and into EchoPad's own `transcript.json`,
-then hands it to Claude. EchoPad (our fork) runs it as its transcriber.
-Design: `../PLAN.md` section 2. Phase 0 spike results: `../spike-qwen3.md`.
+then hands it to Claude. EchoPad (our fork) runs it as its external transcriber, after its own
+diarizer (FluidAudio's community-1 port) has written the speaker turns to `<folder>/turns.json`.
+Design: `../../../PLAN.md` section 2 (in the Notetaker repo). Phase 0 spike results: `spike-qwen3.md` there.
 
 | File | Does |
 |---|---|
-| `transcribe.sh` | What EchoPad runs: `transcribe.sh <folder>`, `--check`, `--setup` (clean env, logging) |
-| `process.py` | Entry point: mode detection, diarize, ASR, merge, write, hand-off, cleanup, notify |
-| `models.py` | `--check` / `--setup`: the two pinned models in `.hf-cache/` |
-| `diarize.py` | `diarize(wav)` (pyannote community-1 on MPS), `speech_regions(wav)` (energy gate) |
+| `transcribe.sh` | What EchoPad runs: `transcribe.sh <folder>`, `--check`, `--setup` (per-user layout, clean env, logging) |
+| `process.py` | Entry point: read `turns.json`, ASR, merge, write, hand-off, cleanup, notify; `--setup` downloads Qwen3 |
+| `models.py` | The Qwen3 download for `--setup`, with `stage:` progress |
+| `diarize.py` | `speech_regions(wav)` (energy gate for the mic track), `clean(turns)` (folds stray short labels) |
 | `asr.py` | `transcribe(wav, chunks, context)` (Qwen3-ASR-1.7B bf16 via mlx-audio) |
 | `glossary.py` | Reads the glossary table; builds the ASR context and the alias → term table |
 | `merge.py` | Speaker labels, the `[hh:mm:ss] **Speaker:** text` body, EchoPad's `transcript.json` |
+| `.claude/skills/meeting-note/` | The `/meeting-note` skill the hand-off runs |
 
-## Install
+## Per-user layout
 
-    cd pipeline
-    uv sync
+This directory is **read-only at runtime**: it will ship inside the signed app
+(`Contents/Resources/pipeline/`, with a pinned uv at `bin/uv`). Nothing is written next to the
+sources (no `.venv`, no caches, no lockfile changes; `PYTHONDONTWRITEBYTECODE=1`). Everything per user
+lives under `BASE` = `$ECHOPAD_DATA_DIR`, else `~/Library/Application Support/EchoPad`:
 
-Both models live in the project-local cache `.hf-cache/` and are downloaded once, normally by
-EchoPad (see *Models* below). From a terminal:
+| Path | What | Set by `transcribe.sh` as |
+|---|---|---|
+| `config.toml` | Settings, written by the app (*Configure* below) | `--config` (`NOTETAKER_CONFIG` overrides the path) |
+| `pipeline-env/` | The Python venv, from `uv.lock` | `UV_PROJECT_ENVIRONMENT` |
+| `models/` | Hugging Face cache with Qwen3-ASR | `HF_HOME` |
+| `uv-cache/` | uv's package cache | `UV_CACHE_DIR` |
+| `python/` | uv-managed CPython (`.python-version`, 3.12.11) | `UV_PYTHON_INSTALL_DIR` (`UV_PYTHON_PREFERENCE=only-managed`) |
+| `pipeline.log` | stdout and stderr of every run and `--setup` | |
 
-    ./transcribe.sh --check                    # models: ok | models: missing qwen3|pyannote|both
-    HF_TOKEN=hf_... ./transcribe.sh --setup    # token only needed while pyannote is missing
+`transcribe.sh` uses `<this dir>/bin/uv` if it exists, else `uv` from PATH, and runs everything as
+`uv run --frozen --no-sync --project <this dir> process.py ...` under
+`env -i HOME PATH <the variables above> HF_HUB_DISABLE_TELEMETRY=1` (PATH = `~/.local/bin`, Homebrew,
+system), plus `ECHOPAD_DATA_DIR` if set, so a run from EchoPad and one from a terminal behave the same.
+Runs are offline (`UV_OFFLINE=1`, `HF_HUB_OFFLINE=1`); only `--setup` goes online.
 
-The pipeline then runs offline (`HF_HUB_OFFLINE=1`, `PYANNOTE_METRICS_ENABLED=0`).
+Measured 2026-10-05: `pipeline-env/` 411 MB, `python/` 49 MB, `uv-cache/` 413 MB (APFS clones of the
+same files, so little extra disk), `models/` 4.1 GB. `--setup` takes about 15 s plus the model download.
+
+## Contract with the app
+
+| Command | stdout | Exit |
+|---|---|---|
+| `transcribe.sh --check` | `setup: ok` or `setup: missing env`, `setup: missing qwen3`, `setup: missing both` | 0 |
+| `transcribe.sh --setup` | `stage: creating python environment`, then if Qwen3 is missing `stage: downloading Qwen3-ASR 1.2/4.1 GB` every 2 s and `stage: downloaded Qwen3-ASR`, then `stage: done` | 0 done, 5 failed (reason = last stderr line) |
+| `transcribe.sh <folder> [options]` | `stage: transcribing <i>/<n>` per ASR chunk, `stage: writing transcript`, `stage: drafting note` (the hand-off), `stage: done` | 0 done, 1 failed (`error.txt`, reason = last stderr line) |
+| same, env or Qwen3 missing | `needs: setup` | 6, before any work: no `error.txt`, no notification |
+
+- **`--check`** never goes online. The env counts as present when `pipeline-env/bin/python` exists and
+  `uv sync --frozen --no-dev --inexact --check` says it matches `uv.lock` (so an app update that changes
+  the lockfile reads as `missing env`). Qwen3 counts as present when its pinned snapshot holds all
+  nine model files; huggingface_hub only links a file there once it is fully downloaded, so a
+  half-finished download counts as missing.
+- **`--setup`** runs `uv sync --frozen --no-dev` (installing the pinned Python under `python/` if
+  needed), then downloads Qwen3 with `huggingface_hub.snapshot_download` at the pinned revision if it
+  is missing (no token; the model is not gated), then checks both again. It is safe to rerun.
+- Everything except the lines above goes to stderr. stdout and stderr stay separate for EchoPad and
+  are both appended to `pipeline.log`.
+- **`<folder>/transcript.json`** is replaced with our transcript in EchoPad's schema (ScribeKit
+  `Transcript`, below) at `writing transcript`, before the hand-off, so EchoPad can show it even if
+  the hand-off fails.
+
+### `turns.json`
+
+The app writes `<folder>/turns.json` before running the pipeline:
+
+    {"mode": "call" | "in-person",
+     "track": "system.wav" | "microphone.wav",
+     "diarizer": "fluidaudio-community-1",
+     "turns": [{"start": 12.4, "end": 18.9, "speaker": "S1"}, ...]}
+
+- `mode` decides everything; the pipeline does no mode detection of its own. `track` is the file the
+  turns refer to and must be `system.wav` for a call and `microphone.wav` in person. Speakers are
+  `S1..SN` in order of first appearance; `diarizer` goes into the transcript frontmatter as
+  `diarization_model`.
+- The turns first go through `clean()`: a label with under 1 s of speech in total, or a segment under
+  0.25 s that touches another one, is folded into the neighbouring turn (community-1 produces such
+  slivers at speaker changes). A remote speaker who only says one short word is therefore merged
+  into the previous speaker.
+- **Call:** the turns become `Remote S1..SN` on `system.wav`; the mic track is always you, so its
+  speech regions by the energy gate (frame RMS above -45 dBFS, gaps under 0.5 s joined) are labelled
+  `your_name` (none when there is no `microphone.wav`). **In person:** the turns become `S1..SN` on `microphone.wav` (Claude works out which is you).
+- A missing or malformed `turns.json` (bad JSON, unknown mode, track not matching the mode, empty
+  `diarizer`, a turn without numeric `0 <= start < end` and a `speaker`) is a recording failure: `error.txt`,
+  exit 1, with the reason, before any ASR. An empty `turns` list is valid.
 
 ## Models
 
-| Model | Repo @ pinned revision | Size | Gated |
-|---|---|---|---|
-| `qwen3` | `mlx-community/Qwen3-ASR-1.7B-bf16` @ `e1f6c26` (`asr.MODEL_REV`) | 4.1 GB | no |
-| `pyannote` | `pyannote/speaker-diarization-community-1` @ `3533c8c` (`diarize.MODEL_REV`) | 34 MB | yes: accept the conditions at https://huggingface.co/pyannote/speaker-diarization-community-1 |
-
-One cache for everything: `process.py` sets `HF_HOME=<pipeline>/.hf-cache` before anything imports
-`huggingface_hub` (and `transcribe.sh` passes the same), so `--check`, `--setup` and real runs look
-in the same place. A model counts as present when its pinned snapshot holds all its weight and
-config files (`models.MODELS`); a half-finished download counts as missing.
-
-- **`--check`**: cache only, no network. Prints `models: ok` or `models: missing qwen3|pyannote|both`,
-  exit 0 either way.
-- **`--setup`**: downloads what is missing with `huggingface_hub.snapshot_download` at the pinned
-  revisions, printing `stage: downloading Qwen3-ASR 1.2/4.1 GB` every 2 s and `stage: done` at the end.
-  It is the only online mode (`HF_HUB_OFFLINE=0`). Qwen3 is fetched without a token. If pyannote is
-  missing and there is no token, it stops before downloading anything, so the app asks once and the
-  whole download then runs unattended.
-
-| Exit | stdout | Meaning |
+| Model | Repo @ pinned revision | Size |
 |---|---|---|
-| 0 | `stage: done` | All models present |
-| 3 | `needs: hf_token` | pyannote is missing and `HF_TOKEN` is not set |
-| 4 | `needs: gate https://huggingface.co/pyannote/speaker-diarization-community-1` | 401/403: token refused or conditions not accepted (HTTP error text on stderr) |
-| 5 | | Network or other failure (reason on stderr) |
+| Qwen3-ASR | `mlx-community/Qwen3-ASR-1.7B-bf16` @ `e1f6c26` (`asr.MODEL_REV`, repeated in `transcribe.sh`) | 4.1 GB |
 
-**The token is only ever passed in the environment** (`HF_TOKEN`, which `transcribe.sh` lets
-through `env -i` for `--setup` only). Nothing here writes it to disk, puts it in argv, or prints it;
-`huggingface_hub` is never asked to log in.
-
-A normal run checks the models first: if any are missing it prints `needs: models`, exits 6 and
-touches nothing (no `error.txt`, no notification), so EchoPad can run `--setup` and then retry.
-With `--turns`, pyannote is not required.
+Diarization runs in the app, so this is the only model the pipeline needs.
 
 ## Configure
 
-    cp config.example.toml config.toml
-
-`config.toml` sits next to `process.py` (or pass `--config <path>`). Keys: `vault`,
-`transcripts_dir` (default `<vault>/_attachments/transcripts`), `glossary_path`, `log_book_dir`,
-`your_name` (the mic speaker in calls), `claude_model`.
+The app writes `BASE/config.toml`; `config.example.toml` lists the keys: `vault`, `transcripts_dir`
+(default `<vault>/_attachments/transcripts`), `glossary_path`, `log_book_dir`, `your_name` (the mic
+speaker in calls), `claude_model`, `retention_days` (default 3) and `calendar` (default true; false
+drops the calendar tool from the hand-off and writes `calendar: off` into the transcript frontmatter,
+which tells the skill to skip the lookup).
 
 The glossary file must exist. It needs a table like:
 
@@ -83,45 +117,33 @@ A header-only table is fine (no context, no replacements).
 
 ## Run
 
-    uv run process.py "<EchoPad library>/<id>"                  # full run
-    uv run process.py <folder> --no-claude                       # skip the claude -p hand-off
-    uv run process.py <folder> --dry-run --turns turns.json      # transcript only, no pyannote
-    uv run process.py <folder>                                   # rerunning a failed folder clears error.txt and tries again
-    uv run process.py --check | --setup                          # models (above)
+    ./transcribe.sh --setup                                   # once per user (online)
+    ./transcribe.sh "<EchoPad library>/<id>"                  # full run
+    ./transcribe.sh <folder> --no-claude                      # skip the claude -p hand-off
+    ./transcribe.sh <folder> --dry-run                        # transcript only
+    NOTETAKER_CONFIG=/tmp/config.toml ./transcribe.sh <folder>   # another config
 
-`transcribe.sh <folder> [options]` runs the same thing the way EchoPad does (below).
+Rerunning a failed folder clears `error.txt` and tries again.
 
-- **stdout** carries only progress lines, flushed, for EchoPad: `stage: detecting mode`,
-  `stage: diarizing`, `stage: transcribing <i>/<n>` (per ASR chunk), `stage: writing transcript`,
-  `stage: drafting note` (the hand-off), `stage: done`. Everything else goes to stderr.
-- **`<folder>/transcript.json`** is replaced with our transcript in EchoPad's schema (ScribeKit
-  `Transcript`, below) at `writing transcript`, before the hand-off, so EchoPad can show it even if
-  the hand-off fails.
-
-- **Mode:** in-person when `system.wav` is missing or has under 1 s of speech by the energy gate.
-  Call mode diarizes `system.wav` into `Remote S1..SN` and labels the mic's speech regions
-  `your_name`. In-person mode diarizes `microphone.wav` (2–4 speakers) into `S1..SN`.
-- **`--turns file.json`:** `[{"start": 1.0, "end": 6.2, "speaker": "SPEAKER_00"}, ...]` replaces
-  pyannote for the track that would be diarized. The frontmatter then says `diarization_model:
-  turns override (file.json)`.
 - **`--dry-run`:** writes the transcript only. No retention cleanup, no hand-off, WAVs kept,
   no notification, and errors are raised instead of written to `error.txt`.
 - **Success:** deletes `microphone.wav` and `system.wav` from the conversation folder, posts a
   notification, exits 0. **Failure:** writes `error.txt` (first line = the error, then the traceback),
   keeps the WAVs, posts a notification with the first line, exits 1 with the traceback and then the
+  first line again as the last stderr line.
 - **Queue:** an `flock` on `<transcripts_dir>/.pipeline.lock`; concurrent runs wait their turn.
 - **Retention:** each run first deletes `*.transcript.md` in `transcripts_dir` whose
-  `retain_until` has passed, unless the frontmatter says `retain: keep`.
+  `retain_until` (start + `retention_days`) has passed, unless the frontmatter says `retain: keep`.
 - **Hand-off:** see below.
 
 ## Hand-off to Claude
 
-`claude -p "/meeting-note <transcript>"` runs the project skill `../.claude/skills/meeting-note/SKILL.md`
-(found because the CLI runs with `pipeline/` as cwd, inside this project). Flags: Sonnet, stream-json,
+`claude -p "/meeting-note <transcript>"` runs the project skill `.claude/skills/meeting-note/SKILL.md`
+(found because `transcribe.sh` runs with this directory as cwd). Flags: Sonnet, stream-json,
 `--max-turns 30`, `--permission-mode dontAsk`, `--tools Read,Edit,Write`, and this `--allowedTools` list, one argv item per rule
 (`<vault>` = the `vault` config value without its leading `/`):
 
-    mcp__claude_ai_Microsoft_365__outlook_calendar_search
+    mcp__claude_ai_Microsoft_365__outlook_calendar_search   (left out when calendar = false)
     mcp__notes-search__search_notes
     mcp__notes-search__get_note
     Read(//<vault>/**)
@@ -151,7 +173,7 @@ to the transcript and sets its `status`. Afterwards `process.py` re-reads the tr
 delete files) makes `process.py` delete the transcript, and anything else is a failure. The skill
 replies with the note's path, which the success notification opens.
 
-If the init event shows the M365 connector `pending`, the run is stopped and retried once. A non-zero
+With the calendar on, if the init event shows the M365 connector `pending`, the run is stopped and retried once. A non-zero
 exit or an error result (for example `Not logged in`) is a failure.
 
 Measured on the 70 s synthetic call (2026-10-05): 9–14 turns, 23–39 s and $0.18–0.26 per
@@ -164,20 +186,14 @@ and clicking the notification opens the draft note (or the transcript) in Obsidi
 
 ## Wire into EchoPad
 
-1. `cp config.example.toml config.toml` and check the paths. Create the glossary note.
-2. EchoPad → Settings → Transcription → **External command** →
-   `/Users/azahradka/Documents/Notetaker/pipeline/transcribe.sh`.
+Until the bundle (PLAN.md Phase B) ships it inside the app:
+
+1. Put the settings in `~/Library/Application Support/EchoPad/config.toml` (start from
+   `config.example.toml`). Create the glossary note.
+2. EchoPad → Settings → Transcription → **External command** → this directory's `transcribe.sh`.
+   The app runs `--check` and, if needed, `--setup`.
 3. Keep audio in EchoPad's library (*Keep audio of the last* 500); the pipeline deletes the WAVs
    itself after success.
-
-EchoPad runs `transcribe.sh <conversation folder>` (the folder holds `microphone.wav`, maybe
-`system.wav`, and `conversation.json`) and also `transcribe.sh --check` / `--setup` for the models.
-The script `cd`s here and runs `uv run process.py <folder>` under
-`env -i HOME PATH HF_HOME PYANNOTE_METRICS_ENABLED=0 HF_HUB_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1`
-(PATH = `~/.local/bin`, Homebrew, system), plus `ECHOPAD_DATA_DIR` if set, so a run from EchoPad
-and one from a terminal behave the same. stdout and stderr stay separate for EchoPad and are both
-appended to `<transcripts_dir>/pipeline.log`. The exit code is `process.py`'s: 0 success, 1 failure
-(reason on stderr), 6 models missing.
 
 **`transcript.json`** matches ScribeKit's `Transcript` (`vendor/ScribeKit/Sources/ScribeKit/Transcript.swift`,
 pinned rev `2ae61e8`), which EchoPad decodes with a plain `JSONDecoder`:
@@ -193,34 +209,20 @@ works out which is you). `words` is required but may be empty; we only have turn
 EchoPad's subtitle export falls back to the segment times. Verified by decoding a pipeline output
 with that exact `Transcript.swift` compiled by `swiftc`.
 
-## Diarization
-
-`diarize.py` runs `pyannote/speaker-diarization-community-1` pinned at revision
-`3533c8cf8e369892e6b79ff1bf80f7b0286a54ee` (33 MB, CC-BY-4.0) on MPS, with audio passed in memory.
-One-time download into the project cache with `transcribe.sh --setup` (*Models* above; accept the
-conditions on the model page first). After that no token and no network are needed:
-`HF_HUB_OFFLINE=1`, and `PYANNOTE_METRICS_ENABLED=0` always. If the revision is not cached a run
-stops with `needs: models` (exit 6) before diarizing.
-
-- **Speed (M2 Max, see `../spike-diarize.md`):** a 10-min, three-voice clip takes about 25–40 s on
-  MPS (real-time factor 0.04–0.065) and about 6.5 min on CPU. Loading the model takes 1–6 s.
-  MPS uses about 4.5 GB of GPU memory at peak plus about 1.4 GB RSS. No ops fall back to CPU
-  (`PYTORCH_ENABLE_MPS_FALLBACK` is not needed). `diarize(wav, device="cpu")` forces CPU.
-- **Output:** `exclusive_speaker_diarization` (one speaker at a time), then `clean()`: a label with
-  under 1 s of speech in total, or a segment under 0.25 s that touches another one, is folded into
-  the neighbouring turn. community-1 produces such slivers at speaker changes. A remote speaker who
-  only says one short word is therefore merged into the previous speaker.
-- **Hints:** call mode passes none; in-person mode passes `min_speakers=2, max_speakers=4`.
-- **Test:** `tests/test_diarize.py` runs the real model on the fake call's `system.wav` and checks
-  for two speakers that match the true turns. It is skipped when the revision is not cached.
-
 ## Tests
 
-    uv run pytest -q
+Against the env and model in `BASE` (run `--setup` first; this adds pytest to `pipeline-env`, and the
+next `--setup` removes it again):
 
-About 35 s. The end-to-end tests render a fake 70 s call with `say` (two voices on `system.wav`,
-one on `microphone.wav`, 2 s of overlap) and run `process.main(... --dry-run --turns ...)` against
-a temporary vault, loading the ASR model once; they also check the stdout stage lines and the
-`transcript.json` written back into the folder. The hand-off is tested against a stub `claude` that sets the transcript status like the skill.
-`tests/test_models.py` runs `--check`, `--setup` without a token, and the exit-6 guard against an empty
-fake cache (downloads are stubbed to fail), plus `transcribe.sh --check` against the real cache.
+    BASE="${ECHOPAD_DATA_DIR:-$HOME/Library/Application Support/EchoPad}"
+    UV_PROJECT_ENVIRONMENT="$BASE/pipeline-env" UV_CACHE_DIR="$BASE/uv-cache" UV_PYTHON_INSTALL_DIR="$BASE/python" \
+        UV_PYTHON_PREFERENCE=only-managed uv run --frozen pytest -q
+
+About 65 s. The end-to-end tests render a fake 70 s call with `say` (two voices on `system.wav`,
+one on `microphone.wav`, 2 s of overlap), write the `turns.json` the app would, and run
+`process.main(... --dry-run ...)` against a temporary vault, loading the ASR model once; they check the
+stdout stage lines, the `transcript.json` written back into the folder, the frontmatter (including
+`retention_days` and `calendar = false`), and `turns.json` validation. The hand-off is tested against a
+stub `claude` that sets the transcript status like the skill. `tests/test_transcribe_sh.py` runs
+`transcribe.sh` itself: `--check` and the exit-6 guard against an empty data dir, and a full dry run
+through the real env and model.

@@ -9,9 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
-# spike
-.hf-cache/
-testdata/meeting_10min.wav
+# gen_test_audio.py output
+testdata/
 
-# local config
+# old local config (now in ~/Library/Application Support/EchoPad)
 config.toml
