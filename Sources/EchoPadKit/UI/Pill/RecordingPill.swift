@@ -39,6 +39,12 @@ struct RecordingPillView: View {
                     .font(.callout.weight(.semibold))
                     .frame(minWidth: 44, alignment: .leading)
                 WaveformView(levels: appState.combinedLevels, maxHeight: 20)
+                if let notice = appState.microphoneNotice {
+                    Image(systemName: "laptopcomputer")
+                        .foregroundStyle(.secondary)
+                        .help(notice)
+                        .accessibilityLabel(notice)
+                }
                 if appState.systemAudioLooksSilent {
                     Image(systemName: "speaker.slash.fill")
                         .foregroundStyle(.yellow)

@@ -22,7 +22,12 @@ struct RecordingSettingsView: View {
             } header: {
                 Text("You")
             } footer: {
-                Text("Everything on this track is labelled with your name, so it needs no speaker detection.")
+                VStack(alignment: .leading, spacing: 4) {
+                    if settings.value.recordsMicrophone {
+                        Text("Avoid Bluetooth microphones: opening one drops the headset to 16 kHz hands-free audio in both directions. With no choice here, EchoPad uses the built-in microphone when the default input is Bluetooth.")
+                    }
+                    Text("Everything on this track is labelled with your name, so it needs no speaker detection.")
+                }
             }
 
             Section {

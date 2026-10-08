@@ -62,9 +62,10 @@ public final class RecordingController {
         let folder = library.folder(for: id)
         let date = Date()
         meetingBundleID = meeting?.bundleID
+        let setup = configuration(for: meeting)
 
         do {
-            try await recorder.start(configuration(for: meeting), in: folder)
+            try await recorder.start(setup.configuration, in: folder)
         } catch {
             try? FileManager.default.removeItem(at: folder)
             fail(Self.describe(error))
@@ -77,6 +78,8 @@ public final class RecordingController {
         appState.currentApp = meeting?.appName
         appState.currentDestinationID = destinationID ?? settings.defaultDestinationID
         appState.systemAudioLooksSilent = false
+        appState.microphoneNotice = setup.microphoneNotice
+        if let notice = setup.microphoneNotice { Log.recording.notice("\(notice)") }
         appState.transition(to: .recording(since: date))
         sounds?.play(.start)
         watchSystemAudio()
@@ -244,11 +247,17 @@ public final class RecordingController {
 
     // MARK: - Helpers
 
-    private func configuration(for meeting: DetectedMeeting?) -> AudioRecorder.Configuration {
+    private func configuration(for meeting: DetectedMeeting?) -> (configuration: AudioRecorder.Configuration,
+                                                                  microphoneNotice: String?) {
         var configuration = AudioRecorder.Configuration()
+        var microphoneNotice: String?
         configuration.backend = SystemAudioBackend(rawValue: settings.systemAudioBackend) ?? .processTap
         if settings.recordsMicrophone {
-            configuration.microphone = settings.microphoneUID.map { .device(uid: $0) } ?? .systemDefault
+            if let uid = settings.microphoneUID {
+                configuration.microphone = .device(uid: uid)
+            } else {
+                (configuration.microphone, microphoneNotice) = Self.unpinnedMicrophone(among: AudioDevices.inputs())
+            }
         } else {
             configuration.microphone = nil
         }
@@ -263,7 +272,17 @@ public final class RecordingController {
         if configuration.backend == .screenCaptureKit, case .apps = configuration.systemAudio {
             configuration.systemAudio = .everything
         }
-        return configuration
+        return (configuration, microphoneNotice)
+    }
+
+    /// The microphone to record when none is pinned: the system default, unless that is a Bluetooth
+    /// headset. Opening a headset's microphone drops it to 16 kHz hands-free audio in both directions,
+    /// so the built-in microphone is used instead, with a notice. Without one, the default stays.
+    nonisolated static func unpinnedMicrophone(among inputs: [AudioDevice])
+        -> (microphone: AudioRecorder.Configuration.Microphone, notice: String?) {
+        guard inputs.first(where: \.isDefault)?.transport == .bluetooth,
+              let builtIn = inputs.first(where: { $0.transport == .builtIn }) else { return (.systemDefault, nil) }
+        return (.device(uid: builtIn.uid), "Using \(builtIn.name): the default input is a Bluetooth headset")
     }
 
     private func defaultTitle(meeting: DetectedMeeting?, date: Date) -> String {

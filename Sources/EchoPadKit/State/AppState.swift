@@ -70,6 +70,8 @@ public final class AppState {
     /// Set when system audio has stayed silent for a while during a call, a hint that the
     /// permission is missing or audio goes elsewhere.
     public var systemAudioLooksSilent = false
+    /// Set when the recording uses another microphone than the system default, and why.
+    public var microphoneNotice: String?
     public var detectedMeeting: String?
 
     private var resetTask: Task<Void, Never>?
