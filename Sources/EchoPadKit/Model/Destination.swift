@@ -143,16 +143,31 @@ public enum AfterSaveAction: Codable, Hashable, Sendable {
 }
 
 public enum ObsidianVault {
+    public static let NOT_A_VAULT = "This folder is not an Obsidian vault (no .obsidian folder inside). Pick the vault itself, e.g. …/Obsidian/Work."
+
+    /// Whether `url` is a vault: a folder with a `.obsidian` folder directly inside.
+    public static func isVault(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.appendingPathComponent(".obsidian").path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+    }
+
+    /// The vault for a folder picked as one: the folder itself, or else its only immediate child that is
+    /// a vault (picking the parent, such as …/Obsidian for …/Obsidian/Work, is the common mistake).
+    /// nil when neither.
+    public static func resolve(picked url: URL) -> URL? {
+        let url = url.standardizedFileURL
+        if isVault(url) { return url }
+        let children = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []
+        let vaults = children.filter(isVault)
+        return vaults.count == 1 ? vaults[0].standardizedFileURL : nil
+    }
+
     /// Walks up from `url` to find a folder holding `.obsidian`.
     public static func containing(_ url: URL) -> URL? {
         var current = url.standardizedFileURL
-        let fm = FileManager.default
         while current.path != "/" {
-            var isDirectory: ObjCBool = false
-            if fm.fileExists(atPath: current.appendingPathComponent(".obsidian").path, isDirectory: &isDirectory),
-               isDirectory.boolValue {
-                return current
-            }
+            if isVault(current) { return current }
             current.deleteLastPathComponent()
         }
         return nil

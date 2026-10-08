@@ -63,6 +63,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             // The pipeline manages its own models and the speaker model downloads on first use;
             // only leftovers need finishing.
+            if let config = PipelineConfig(settings.value), !PipelineConfig.hasValidVault(settings.value) {
+                // Shown as "Needs setup: Obsidian vault"; each run fails early until it is fixed.
+                Log.transcription.error("The saved vault \(config.vault) is not an Obsidian vault")
+            }
             Task { await finishUnfinished() }
         }
 

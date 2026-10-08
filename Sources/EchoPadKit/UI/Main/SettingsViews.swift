@@ -182,6 +182,8 @@ struct TranscriptionSettingsView: View {
     @Environment(SpeakerFinder.self) private var speakers
     @Environment(PipelineSetup.self) private var setup
     @Environment(\.appActions) private var actions
+    /// What happened to the last folder picked as the vault: rejected, or a vault inside it used instead.
+    @State private var pickedVaultMessage: (text: String, isProblem: Bool)?
 
     var body: some View {
         @Bindable var settings = settings
@@ -254,11 +256,14 @@ struct TranscriptionSettingsView: View {
             LabeledContent("Vault folder") {
                 HStack {
                     Text(settings.value.vaultPath.isEmpty ? "Not chosen" : (settings.value.vaultPath as NSString).abbreviatingWithTildeInPath)
-                        .foregroundStyle(settings.value.vaultPath.isEmpty ? .orange : .secondary)
+                        .foregroundStyle(PipelineConfig.hasValidVault(settings.value) ? Color.secondary : Color.orange)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Button("Choose…") { chooseVault() }
                 }
+            }
+            if let message = vaultMessage {
+                Text(message.text).font(.caption).foregroundStyle(message.isProblem ? Color.orange : Color.secondary)
             }
             TextField("Log Book subfolder", text: $settings.value.logBookFolder, prompt: Text(Settings.DEFAULT_LOG_BOOK_FOLDER))
             TextField("Transcripts subfolder", text: $settings.value.transcriptsFolder,
@@ -313,7 +318,7 @@ struct TranscriptionSettingsView: View {
                 Text(progress).foregroundStyle(.secondary).lineLimit(1)
             }
         } else {
-            let text = setup.summary(vaultChosen: !settings.value.vaultPath.isEmpty)
+            let text = setup.summary(vaultChosen: PipelineConfig.hasValidVault(settings.value))
             switch text {
             case "Ready": Label("Ready", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
             case "Checking…":
@@ -409,7 +414,26 @@ struct TranscriptionSettingsView: View {
         panel.canCreateDirectories = false
         panel.message = "Choose your Obsidian vault (the folder that contains .obsidian)."
         if !settings.value.vaultPath.isEmpty { panel.directoryURL = URL(fileURLWithPath: settings.value.vaultPath) }
-        if panel.runModal() == .OK, let url = panel.url { settings.value.vaultPath = url.path }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let vault = ObsidianVault.resolve(picked: url) else {
+            pickedVaultMessage = (ObsidianVault.NOT_A_VAULT, true)
+            return
+        }
+        settings.value.vaultPath = vault.path
+        pickedVaultMessage = vault.path == url.standardizedFileURL.path
+            ? nil : ("Using the vault “\(vault.lastPathComponent)” inside the folder you picked.", false)
+    }
+
+    /// The last pick's outcome, else why the saved vault cannot be used.
+    private var vaultMessage: (text: String, isProblem: Bool)? {
+        if let pickedVaultMessage { return pickedVaultMessage }
+        guard !settings.value.vaultPath.isEmpty else { return nil }
+        do {
+            _ = try PipelineConfig.validate(settings.value)
+            return nil
+        } catch {
+            return (RecordingController.describe(error), true)
+        }
     }
 
     @ViewBuilder

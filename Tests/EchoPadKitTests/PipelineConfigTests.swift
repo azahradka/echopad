@@ -83,18 +83,59 @@ final class PipelineConfigTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path), ["config.toml"])
     }
 
-    func testValidateNeedsAnExistingFolder() throws {
+    func testValidateNeedsAnExistingVault() throws {
         let vault = root.appendingPathComponent("Vault")
         XCTAssertThrowsError(try PipelineConfig.validate(settings(vault: vault.path))) { error in
             XCTAssertEqual(error as? PipelineConfig.Failure, .vaultMissing(vault.path))
         }
         try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
+        XCTAssertThrowsError(try PipelineConfig.validate(settings(vault: vault.path))) { error in
+            XCTAssertEqual(error as? PipelineConfig.Failure, .notAVault(vault.path))
+        }
+        XCTAssertFalse(PipelineConfig.hasValidVault(settings(vault: vault.path)))
+        try FileManager.default.createDirectory(at: vault.appendingPathComponent(".obsidian"), withIntermediateDirectories: true)
         XCTAssertEqual(try PipelineConfig.validate(settings(vault: vault.path)).vault, vault.path)
+        XCTAssertTrue(PipelineConfig.hasValidVault(settings(vault: vault.path)))
+    }
+
+    func testResolvesThePickedVaultFolder() throws {
+        let fm = FileManager.default
+        func folder(_ path: String) throws -> URL {
+            let url = root.appendingPathComponent(path)
+            try fm.createDirectory(at: url, withIntermediateDirectories: true)
+            return url
+        }
+        // Obsidian/ holds one vault (Work) and a plain folder: picking Obsidian/ selects Work.
+        let parent = try folder("Obsidian")
+        let work = try folder("Obsidian/Work")
+        _ = try folder("Obsidian/Work/.obsidian")
+        _ = try folder("Obsidian/Attachments")
+        try Data("x".utf8).write(to: parent.appendingPathComponent("notes.md"))
+        XCTAssertFalse(ObsidianVault.isVault(parent))
+        XCTAssertTrue(ObsidianVault.isVault(work))
+        XCTAssertEqual(ObsidianVault.resolve(picked: work)?.path, work.path)
+        XCTAssertEqual(ObsidianVault.resolve(picked: parent)?.path, work.path)
+        // A vault inside the vault does not matter when the picked folder is one.
+        _ = try folder("Obsidian/Work/Nested/.obsidian")
+        XCTAssertEqual(ObsidianVault.resolve(picked: work)?.path, work.path)
+
+        // Two vaults below: ambiguous, rejected.
+        _ = try folder("Obsidian/Personal/.obsidian")
+        XCTAssertNil(ObsidianVault.resolve(picked: parent))
+        // No vault at all, and a file named .obsidian, are rejected.
+        XCTAssertNil(ObsidianVault.resolve(picked: try folder("Empty")))
+        let fake = try folder("Fake")
+        try Data().write(to: fake.appendingPathComponent(".obsidian"))
+        XCTAssertFalse(ObsidianVault.isVault(fake))
+        XCTAssertNil(ObsidianVault.resolve(picked: fake))
+        XCTAssertNil(ObsidianVault.resolve(picked: root.appendingPathComponent("Missing")))
+        XCTAssertEqual(ObsidianVault.NOT_A_VAULT,
+                       "This folder is not an Obsidian vault (no .obsidian folder inside). Pick the vault itself, e.g. …/Obsidian/Work.")
     }
 
     func testPrepareRunCreatesTheTranscriptsFolder() throws {
         let vault = root.appendingPathComponent("Vault")
-        try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: vault.appendingPathComponent(".obsidian"), withIntermediateDirectories: true)
         let config = try PipelineConfig.validate(settings(vault: vault.path))
         let url = root.appendingPathComponent("data/config.toml")
         try config.prepareRun(configURL: url)

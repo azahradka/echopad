@@ -16,6 +16,7 @@ public struct PipelineConfig: Equatable, Sendable {
     public enum Failure: LocalizedError, Equatable {
         case noVault
         case vaultMissing(String)
+        case notAVault(String)
 
         public var errorDescription: String? {
             switch self {
@@ -23,6 +24,8 @@ public struct PipelineConfig: Equatable, Sendable {
                 return "Choose your Obsidian vault in Settings → Transcription"
             case .vaultMissing(let path):
                 return "The Obsidian vault \(path) was not found. Choose it again in Settings → Transcription."
+            case .notAVault(let path):
+                return "\(path) is not an Obsidian vault (no .obsidian folder inside). Choose the vault itself in Settings → Transcription."
             }
         }
     }
@@ -53,14 +56,21 @@ public struct PipelineConfig: Equatable, Sendable {
         calendar = settings.looksUpCalendar
     }
 
-    /// The vault is required before a recording can go through the pipeline.
+    /// The vault is required before a recording can go through the pipeline, and must be a vault
+    /// (holding `.obsidian`), not for example the folder above it.
     public static func validate(_ settings: Settings) throws -> PipelineConfig {
         guard let config = PipelineConfig(settings) else { throw Failure.noVault }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: config.vault, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw Failure.vaultMissing(config.vault)
         }
+        guard ObsidianVault.isVault(URL(fileURLWithPath: config.vault)) else { throw Failure.notAVault(config.vault) }
         return config
+    }
+
+    /// Whether the saved vault would pass ``validate(_:)``; the Pipeline row says "Needs setup: Obsidian vault" otherwise.
+    public static func hasValidVault(_ settings: Settings) -> Bool {
+        (try? validate(settings)) != nil
     }
 
     public var toml: String {
